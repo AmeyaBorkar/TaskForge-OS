@@ -1,9 +1,11 @@
 /* ================================================================
  *  TaskForge v2 -- Banking System on OS Kernel (Win32 GUI)
  *
- *  A single, self-contained Win32 GUI that shows the banking
- *  application on the LEFT and the live OS kernel dashboard on
- *  the RIGHT, with a trace log at the bottom.
+ *  Clean, tabbed interface:
+ *    Tab 1: Banking       -- account operations, transfers, list
+ *    Tab 2: OS Dashboard  -- live kernel state overview
+ *    Tab 3: OS Config     -- scheduler, memory, cache, disk settings
+ *    Tab 4: Trace Log     -- detailed syscall trace from operations
  *
  *  Build:
  *    gcc -Wall -Wextra -std=c11 -Ikernel -o taskforge_gui_v2.exe \
@@ -21,1475 +23,1474 @@
 #include <time.h>
 #include <pthread.h>
 
-/* Include the OS kernel directly */
 #include "../kernel/os_kernel.h"
 #include "../kernel/os_syscall.h"
 
 /* ============================================================
- *  Window / layout constants
+ *  Global kernel instance (defined in os_kernel.c)
  * ============================================================ */
-#define WND_WIDTH       1150
-#define WND_HEIGHT      780
-#define LEFT_PCT        60      /* left panel takes 60% */
-#define BOTTOM_H        180     /* trace log height */
-#define MARGIN          8
+/* g_kernel is already defined in os_kernel.c and declared
+   extern in os_syscall.h -- no redefinition needed here. */
+
+/* ============================================================
+ *  Window constants
+ * ============================================================ */
+#define WND_W           800
+#define WND_H           650
+#define WND_MIN_W       700
+#define WND_MIN_H       550
+
+#define TAB_TOP_PAD     30      /* space below tab headers */
+#define PAD             12      /* general padding */
 #define LABEL_H         18
-#define EDIT_H          22
-#define BTN_H           28
+#define EDIT_H          24
+#define BTN_H           30
 #define COMBO_H         24
-#define GROUP_PAD       20
+#define GROUP_PAD       22
+#define VGAP            30      /* vertical gap between sections */
+#define HGAP            12      /* horizontal gap between controls */
 
 /* ============================================================
  *  Control IDs
  * ============================================================ */
 enum {
-    /* Input fields */
-    ID_EDT_NAME = 1001,
-    ID_EDT_AMOUNT,
-    ID_EDT_ACCID,
-    ID_EDT_TARGET,
+    /* Tab control */
+    IDC_TABCTRL = 100,
 
-    /* Buttons */
-    ID_BTN_CREATE = 1100,
-    ID_BTN_DEPOSIT,
-    ID_BTN_WITHDRAW,
-    ID_BTN_TRANSFER,
-    ID_BTN_BALANCE,
-    ID_BTN_APPLY,
+    /* Banking -- inputs */
+    IDC_EDIT_NAME = 1001,
+    IDC_EDIT_AMOUNT,
+    IDC_EDIT_ACCID,
+    IDC_EDIT_FROM_ACC,
+    IDC_EDIT_TO_ACC,
+    IDC_EDIT_TRANS_AMT,
 
-    /* Combo boxes */
-    ID_CMB_SCHED = 1200,
-    ID_CMB_MEM,
-    ID_CMB_CACHE,
-    ID_CMB_DISK,
+    /* Banking -- buttons */
+    IDC_BTN_CREATE = 1100,
+    IDC_BTN_BALANCE,
+    IDC_BTN_DEPOSIT,
+    IDC_BTN_WITHDRAW,
+    IDC_BTN_TRANSFER,
 
-    /* Display panels */
-    ID_DASHBOARD = 1300,
-    ID_ACCOUNTS,
-    ID_TRACE,
+    /* Banking -- display */
+    IDC_ACCOUNTS_LIST = 1200,
 
-    /* Group boxes (purely visual) */
-    ID_GRP_BANK = 1400,
-    ID_GRP_CONFIG,
-    ID_GRP_ACCTS,
-    ID_GRP_DASH,
-    ID_GRP_TRACE
+    /* Banking -- group boxes */
+    IDC_GRP_OPS = 1250,
+    IDC_GRP_TRANSFER,
+    IDC_GRP_ACCLIST,
+
+    /* Dashboard */
+    IDC_DASH_TEXT = 1300,
+    IDC_BTN_REFRESH,
+
+    /* Config */
+    IDC_COMBO_SCHED = 1400,
+    IDC_COMBO_MEM,
+    IDC_COMBO_CACHE,
+    IDC_COMBO_DISK,
+    IDC_EDIT_QUANTUM,
+    IDC_BTN_APPLY,
+
+    /* Trace */
+    IDC_TRACE_TEXT = 1500,
+    IDC_BTN_CLEAR_LOG
 };
 
 /* ============================================================
- *  Banking data (mirrors bank.h structures)
+ *  Window handles
  * ============================================================ */
-#define MAX_ACCOUNTS     20
-#define MAX_TRANSACTIONS 100
+static HINSTANCE g_hInst;
+static HWND g_hWnd;
 
-typedef struct {
-    int     id;
-    char    holder[OS_MAX_NAME];
-    double  balance;
-    int     active;
-    int     resource_id;
-    int     file_id;
-} GuiAccount;
+/* Tab control and panels */
+static HWND hTabCtrl;
+static HWND hPanelBank, hPanelDash, hPanelConfig, hPanelTrace;
 
-typedef struct {
-    int     id;
-    int     from_acc;
-    int     to_acc;
-    double  amount;
-    char    type[16];
-    time_t  timestamp;
-    int     pid;
-    int     mem_addr;
-} GuiTransaction;
+/* Banking controls */
+static HWND hEditName, hEditAmount, hEditAccId;
+static HWND hEditFromAcc, hEditToAcc, hEditTransAmt;
+static HWND hAccountsList;
 
-static GuiAccount   accounts[MAX_ACCOUNTS];
-static int          acc_count  = 0;
-static GuiTransaction txlog[MAX_TRANSACTIONS];
-static int          tx_count   = 0;
-static int          accounts_dir = -1;   /* FS dir id for /accounts */
-static int          logs_dir     = -1;   /* FS dir id for /logs */
+/* Dashboard */
+static HWND hDashText;
+
+/* Config */
+static HWND hComboSched, hComboMem, hComboCache, hComboDisk;
+static HWND hEditQuantum;
+
+/* Trace */
+static HWND hTraceText;
+
+/* Fonts */
+static HFONT hFontUI;
+static HFONT hFontMono;
+
+/* Dark background brush for dashboard and trace */
+static HBRUSH hBrushDark;
+#define CLR_DARK_BG     RGB(20, 20, 30)
+#define CLR_LIGHT_TEXT  RGB(210, 220, 230)
+#define CLR_MONO_GREEN  RGB(140, 220, 140)
 
 /* ============================================================
- *  Trace output buffer
+ *  Trace Buffer
  * ============================================================ */
-#define TRACE_BUF_SIZE 65536
+#define TRACE_BUF_SIZE  65536
+
 static char trace_buf[TRACE_BUF_SIZE];
 static int  trace_len = 0;
 
-static void trace_clear(void) {
+static void trace_clear(void)
+{
     trace_buf[0] = '\0';
-    trace_len    = 0;
+    trace_len = 0;
 }
 
-static void trace_append(const char *fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
-    int room = TRACE_BUF_SIZE - trace_len - 1;
-    if (room > 0) {
-        int n = vsnprintf(trace_buf + trace_len, room, fmt, ap);
-        if (n > 0) trace_len += (n < room) ? n : room;
-    }
-    va_end(ap);
-}
-
-/* Prepend a timestamp to each trace line */
-static void trace_ts(const char *fmt, ...) {
-    char tmp[512];
-    va_list ap;
-    va_start(ap, fmt);
-    vsnprintf(tmp, sizeof(tmp), fmt, ap);
-    va_end(ap);
+static void trace_log(const char *fmt, ...)
+{
+    if (trace_len >= TRACE_BUF_SIZE - 256)
+        return;
 
     time_t now = time(NULL);
     struct tm *t = localtime(&now);
-    char ts[16];
-    snprintf(ts, sizeof(ts), "[%02d:%02d:%02d] ",
-             t->tm_hour, t->tm_min, t->tm_sec);
+    trace_len += snprintf(trace_buf + trace_len,
+                          (size_t)(TRACE_BUF_SIZE - trace_len),
+                          "[%02d:%02d:%02d] ",
+                          t->tm_hour, t->tm_min, t->tm_sec);
 
-    trace_append("%s%s\r\n", ts, tmp);
+    va_list ap;
+    va_start(ap, fmt);
+    trace_len += vsnprintf(trace_buf + trace_len,
+                           (size_t)(TRACE_BUF_SIZE - trace_len),
+                           fmt, ap);
+    va_end(ap);
+
+    trace_len += snprintf(trace_buf + trace_len,
+                          (size_t)(TRACE_BUF_SIZE - trace_len),
+                          "\r\n");
 }
 
 /* ============================================================
- *  Global window handles
+ *  Banking State (local to GUI)
  * ============================================================ */
-static HWND hMainWnd;
+typedef struct {
+    int    id;
+    char   holder[64];
+    double balance;
+    int    active;
+    int    file_id;
+} GuiAccount;
 
-/* Input fields */
-static HWND hEdtName, hEdtAmount, hEdtAccId, hEdtTarget;
-
-/* Buttons */
-static HWND hBtnCreate, hBtnDeposit, hBtnWithdraw;
-static HWND hBtnTransfer, hBtnBalance, hBtnApply;
-
-/* Combo boxes */
-static HWND hCmbSched, hCmbMem, hCmbCache, hCmbDisk;
-
-/* Display panels */
-static HWND hDashboard, hAccounts, hTrace;
-
-/* Group boxes */
-static HWND hGrpBank, hGrpConfig, hGrpAccts, hGrpDash, hGrpTrace;
-
-/* Labels */
-static HWND hLblName, hLblAmount, hLblAccId, hLblTarget;
-static HWND hLblSched, hLblMem, hLblCache, hLblDisk;
-
-/* Font */
-static HFONT hFontUI, hFontMono;
+static GuiAccount accounts[20];
+static int acc_count = 0;
+static int accounts_dir = -1;
+static int logs_dir = -1;
 
 /* ============================================================
  *  Forward declarations
  * ============================================================ */
-static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
-static void create_controls(HWND hwnd);
+static void create_tabs(HWND hwnd);
+static void create_bank_panel(HWND parent);
+static void create_dash_panel(HWND parent);
+static void create_config_panel(HWND parent);
+static void create_trace_panel(HWND parent);
+static void switch_tab(int idx);
+static void resize_panels(int w, int h);
+
+static void refresh_accounts(void);
 static void refresh_dashboard(void);
-static void refresh_accounts_list(void);
-static void post_trace(void);
-static void init_banking_fs(void);
+static void update_trace_display(void);
+static void apply_config(void);
 
-/* Banking operations */
-static void gui_create_account(const char *name, double initial);
-static void gui_deposit(int acc_id, double amount);
-static void gui_withdraw(int acc_id, double amount);
-static void gui_transfer(int from_id, int to_id, double amount);
-static void gui_check_balance(int acc_id);
-static void gui_apply_config(void);
+static void do_create_account(const char *name, double initial);
+static void do_deposit(int acc_id, double amount);
+static void do_withdraw(int acc_id, double amount);
+static void do_transfer(int from_id, int to_id, double amount);
+static void do_check_balance(int acc_id);
 
-/* Helpers */
-static int  get_edit_int(HWND h);
-static double get_edit_double(HWND h);
-static void get_edit_text(HWND h, char *buf, int max);
+static GuiAccount *find_account(int id);
+
+static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
 
 /* ============================================================
- *  WinMain -- entry point
+ *  Helpers
+ * ============================================================ */
+static HWND make_label(HWND parent, const char *text,
+                       int x, int y, int w, int h)
+{
+    HWND hw = CreateWindowExA(0, "STATIC", text,
+        WS_CHILD | WS_VISIBLE | SS_LEFT,
+        x, y, w, h, parent, NULL, g_hInst, NULL);
+    SendMessageA(hw, WM_SETFONT, (WPARAM)hFontUI, TRUE);
+    return hw;
+}
+
+static HWND make_edit(HWND parent, int id,
+                      int x, int y, int w, int h, DWORD extra)
+{
+    HWND hw = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "",
+        WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | extra,
+        x, y, w, h, parent, (HMENU)(INT_PTR)id, g_hInst, NULL);
+    SendMessageA(hw, WM_SETFONT, (WPARAM)hFontUI, TRUE);
+    return hw;
+}
+
+static HWND make_button(HWND parent, const char *text, int id,
+                        int x, int y, int w, int h)
+{
+    HWND hw = CreateWindowExA(0, "BUTTON", text,
+        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        x, y, w, h, parent, (HMENU)(INT_PTR)id, g_hInst, NULL);
+    SendMessageA(hw, WM_SETFONT, (WPARAM)hFontUI, TRUE);
+    return hw;
+}
+
+static HWND make_combo(HWND parent, int id,
+                       int x, int y, int w, int drop_h)
+{
+    HWND hw = CreateWindowExA(0, "COMBOBOX", "",
+        WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
+        x, y, w, drop_h, parent, (HMENU)(INT_PTR)id, g_hInst, NULL);
+    SendMessageA(hw, WM_SETFONT, (WPARAM)hFontUI, TRUE);
+    return hw;
+}
+
+static HWND make_groupbox(HWND parent, const char *text, int id,
+                          int x, int y, int w, int h)
+{
+    HWND hw = CreateWindowExA(0, "BUTTON", text,
+        WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
+        x, y, w, h, parent, (HMENU)(INT_PTR)id, g_hInst, NULL);
+    SendMessageA(hw, WM_SETFONT, (WPARAM)hFontUI, TRUE);
+    return hw;
+}
+
+static HWND make_multiline(HWND parent, int id,
+                           int x, int y, int w, int h, HFONT font)
+{
+    HWND hw = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "",
+        WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_HSCROLL |
+        ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | ES_AUTOHSCROLL,
+        x, y, w, h, parent, (HMENU)(INT_PTR)id, g_hInst, NULL);
+    SendMessageA(hw, WM_SETFONT, (WPARAM)font, TRUE);
+    return hw;
+}
+
+/* ============================================================
+ *  WinMain
  * ============================================================ */
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev,
                    LPSTR lpCmd, int nShow)
 {
     (void)hPrev; (void)lpCmd;
+    g_hInst = hInst;
 
-    /* Initialize common controls (for group boxes, etc.) */
-    INITCOMMONCONTROLSEX icc = { sizeof(icc), ICC_STANDARD_CLASSES };
-    InitCommonControlsEx(&icc);
-
-    /* Boot the OS kernel */
+    /* Initialize kernel */
     kernel_init(&g_kernel);
+
+    /* Create filesystem directories for banking */
+    accounts_dir = sys_create("accounts", 1, 0);
+    logs_dir     = sys_create("logs",     1, 0);
+
+    /* Init common controls (for tab) */
+    INITCOMMONCONTROLSEX icex;
+    icex.dwSize = sizeof(icex);
+    icex.dwICC  = ICC_TAB_CLASSES | ICC_STANDARD_CLASSES;
+    InitCommonControlsEx(&icex);
+
+    /* Create fonts */
+    hFontUI = CreateFontA(
+        -MulDiv(9, GetDeviceCaps(GetDC(NULL), LOGPIXELSY), 72),
+        0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, "Segoe UI");
+
+    hFontMono = CreateFontA(
+        -MulDiv(10, GetDeviceCaps(GetDC(NULL), LOGPIXELSY), 72),
+        0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY, FIXED_PITCH | FF_MODERN, "Consolas");
+
+    hBrushDark = CreateSolidBrush(CLR_DARK_BG);
 
     /* Register window class */
     WNDCLASSEXA wc;
-    memset(&wc, 0, sizeof(wc));
+    ZeroMemory(&wc, sizeof(wc));
     wc.cbSize        = sizeof(wc);
     wc.style         = CS_HREDRAW | CS_VREDRAW;
     wc.lpfnWndProc   = WndProc;
-    wc.hInstance     = hInst;
-    wc.hIcon         = LoadIconA(NULL, IDI_APPLICATION);
-    wc.hCursor       = LoadCursorA(NULL, IDC_ARROW);
-    wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
-    wc.lpszClassName = "TaskForgeV2";
-    wc.hIconSm       = LoadIconA(NULL, IDI_APPLICATION);
+    wc.hInstance      = hInst;
+    wc.hCursor        = LoadCursor(NULL, IDC_ARROW);
+    wc.hbrBackground  = (HBRUSH)(COLOR_BTNFACE + 1);
+    wc.lpszClassName  = "TaskForgeV2Class";
+    wc.hIcon          = LoadIcon(NULL, IDI_APPLICATION);
+    wc.hIconSm        = LoadIcon(NULL, IDI_APPLICATION);
     RegisterClassExA(&wc);
 
     /* Create main window */
-    hMainWnd = CreateWindowExA(
-        0, "TaskForgeV2",
-        "TaskForge -- Banking System on OS Kernel",
+    g_hWnd = CreateWindowExA(0, "TaskForgeV2Class",
+        "TaskForge - Banking System on OS Kernel",
         WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
-        CW_USEDEFAULT, CW_USEDEFAULT,
-        WND_WIDTH, WND_HEIGHT,
+        CW_USEDEFAULT, CW_USEDEFAULT, WND_W, WND_H,
         NULL, NULL, hInst, NULL);
 
-    if (!hMainWnd) {
-        MessageBoxA(NULL, "Failed to create main window.", "Error", MB_OK);
-        return 1;
-    }
-
-    ShowWindow(hMainWnd, nShow);
-    UpdateWindow(hMainWnd);
+    ShowWindow(g_hWnd, nShow);
+    UpdateWindow(g_hWnd);
 
     /* Message loop */
     MSG msg;
     while (GetMessageA(&msg, NULL, 0, 0)) {
-        TranslateMessage(&msg);
-        DispatchMessageA(&msg);
+        if (!IsDialogMessageA(g_hWnd, &msg)) {
+            TranslateMessage(&msg);
+            DispatchMessageA(&msg);
+        }
     }
+
+    /* Cleanup */
+    kernel_shutdown(&g_kernel);
+    DeleteObject(hFontUI);
+    DeleteObject(hFontMono);
+    DeleteObject(hBrushDark);
 
     return (int)msg.wParam;
 }
 
 /* ============================================================
- *  Helper: read text from an edit control
+ *  Tab Creation
  * ============================================================ */
-static void get_edit_text(HWND h, char *buf, int max) {
-    GetWindowTextA(h, buf, max);
-}
+static void create_tabs(HWND hwnd)
+{
+    RECT rc;
+    GetClientRect(hwnd, &rc);
+    int cw = rc.right;
+    int ch = rc.bottom;
 
-static int get_edit_int(HWND h) {
-    char buf[64];
-    GetWindowTextA(h, buf, sizeof(buf));
-    return atoi(buf);
-}
+    /* Tab control fills the whole client area */
+    hTabCtrl = CreateWindowExA(0, WC_TABCONTROLA, "",
+        WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
+        0, 0, cw, ch,
+        hwnd, (HMENU)IDC_TABCTRL, g_hInst, NULL);
+    SendMessageA(hTabCtrl, WM_SETFONT, (WPARAM)hFontUI, TRUE);
 
-static double get_edit_double(HWND h) {
-    char buf[64];
-    GetWindowTextA(h, buf, sizeof(buf));
-    return atof(buf);
+    /* Insert tabs */
+    TCITEMA tie;
+    ZeroMemory(&tie, sizeof(tie));
+    tie.mask = TCIF_TEXT;
+
+    tie.pszText = "Banking";
+    TabCtrl_InsertItem(hTabCtrl, 0, &tie);
+
+    tie.pszText = "OS Dashboard";
+    TabCtrl_InsertItem(hTabCtrl, 1, &tie);
+
+    tie.pszText = "OS Config";
+    TabCtrl_InsertItem(hTabCtrl, 2, &tie);
+
+    tie.pszText = "Trace Log";
+    TabCtrl_InsertItem(hTabCtrl, 3, &tie);
+
+    /* Get display area inside tab control */
+    RECT tabrc;
+    GetClientRect(hTabCtrl, &tabrc);
+    TabCtrl_AdjustRect(hTabCtrl, FALSE, &tabrc);
+
+    int px = tabrc.left;
+    int py = tabrc.top;
+    int pw = tabrc.right - tabrc.left;
+    int ph = tabrc.bottom - tabrc.top;
+
+    /* Create panels (static child windows that hold each tab's controls) */
+    hPanelBank = CreateWindowExA(0, "STATIC", "",
+        WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
+        px, py, pw, ph, hTabCtrl, NULL, g_hInst, NULL);
+
+    hPanelDash = CreateWindowExA(0, "STATIC", "",
+        WS_CHILD | WS_CLIPCHILDREN,
+        px, py, pw, ph, hTabCtrl, NULL, g_hInst, NULL);
+
+    hPanelConfig = CreateWindowExA(0, "STATIC", "",
+        WS_CHILD | WS_CLIPCHILDREN,
+        px, py, pw, ph, hTabCtrl, NULL, g_hInst, NULL);
+
+    hPanelTrace = CreateWindowExA(0, "STATIC", "",
+        WS_CHILD | WS_CLIPCHILDREN,
+        px, py, pw, ph, hTabCtrl, NULL, g_hInst, NULL);
+
+    /* Populate each panel */
+    create_bank_panel(hPanelBank);
+    create_dash_panel(hPanelDash);
+    create_config_panel(hPanelConfig);
+    create_trace_panel(hPanelTrace);
 }
 
 /* ============================================================
- *  Push trace buffer to the trace edit control and scroll down
+ *  Banking Panel (Tab 1)
  * ============================================================ */
-static void post_trace(void) {
-    SetWindowTextA(hTrace, trace_buf);
-    /* Scroll to bottom */
-    int len = GetWindowTextLengthA(hTrace);
-    SendMessageA(hTrace, EM_SETSEL, (WPARAM)len, (LPARAM)len);
-    SendMessageA(hTrace, EM_SCROLLCARET, 0, 0);
+static void create_bank_panel(HWND parent)
+{
+    RECT rc;
+    GetClientRect(parent, &rc);
+    int pw = rc.right;
+    int lbl_w = 120;
+    int field_w = 220;
+    int grp_w = pw - 2 * PAD;
+    int x0 = PAD;
+
+    /* === Group: Account Operations === */
+    int gy = PAD;
+    int grp_ops_h = 210;
+    make_groupbox(parent, "Account Operations", IDC_GRP_OPS,
+                  x0, gy, grp_w, grp_ops_h);
+
+    int ix = x0 + GROUP_PAD;
+    int iy = gy + GROUP_PAD + 4;
+
+    /* Account Holder */
+    make_label(parent, "Account Holder:", ix, iy + 3, lbl_w, LABEL_H);
+    hEditName = make_edit(parent, IDC_EDIT_NAME,
+                          ix + lbl_w + HGAP, iy, field_w, EDIT_H, 0);
+
+    iy += EDIT_H + 10;
+
+    /* Amount */
+    make_label(parent, "Amount ($):", ix, iy + 3, lbl_w, LABEL_H);
+    hEditAmount = make_edit(parent, IDC_EDIT_AMOUNT,
+                            ix + lbl_w + HGAP, iy, field_w, EDIT_H, 0);
+
+    iy += EDIT_H + 10;
+
+    /* Account ID */
+    make_label(parent, "Account ID:", ix, iy + 3, lbl_w, LABEL_H);
+    hEditAccId = make_edit(parent, IDC_EDIT_ACCID,
+                           ix + lbl_w + HGAP, iy, field_w, EDIT_H, 0);
+
+    iy += EDIT_H + 18;
+
+    /* Buttons row 1 */
+    int btn_w = 130;
+    make_button(parent, "Create Account", IDC_BTN_CREATE,
+                ix, iy, btn_w, BTN_H);
+    make_button(parent, "Check Balance", IDC_BTN_BALANCE,
+                ix + btn_w + HGAP, iy, btn_w, BTN_H);
+
+    iy += BTN_H + 8;
+
+    /* Buttons row 2 */
+    make_button(parent, "Deposit", IDC_BTN_DEPOSIT,
+                ix, iy, btn_w, BTN_H);
+    make_button(parent, "Withdraw", IDC_BTN_WITHDRAW,
+                ix + btn_w + HGAP, iy, btn_w, BTN_H);
+
+    /* === Group: Transfer === */
+    gy += grp_ops_h + VGAP - 10;
+    int grp_trans_h = 150;
+    make_groupbox(parent, "Transfer", IDC_GRP_TRANSFER,
+                  x0, gy, grp_w, grp_trans_h);
+
+    ix = x0 + GROUP_PAD;
+    iy = gy + GROUP_PAD + 4;
+
+    /* From / To / Amount on one row each */
+    int small_lbl = 100;
+    int small_field = 100;
+
+    make_label(parent, "From Account:", ix, iy + 3, small_lbl, LABEL_H);
+    hEditFromAcc = make_edit(parent, IDC_EDIT_FROM_ACC,
+                             ix + small_lbl + HGAP, iy,
+                             small_field, EDIT_H, 0);
+
+    make_label(parent, "To Account:",
+               ix + small_lbl + HGAP + small_field + 20, iy + 3,
+               small_lbl, LABEL_H);
+    hEditToAcc = make_edit(parent, IDC_EDIT_TO_ACC,
+                           ix + 2 * (small_lbl + HGAP) + small_field + 20,
+                           iy, small_field, EDIT_H, 0);
+
+    iy += EDIT_H + 10;
+
+    make_label(parent, "Amount ($):", ix, iy + 3, small_lbl, LABEL_H);
+    hEditTransAmt = make_edit(parent, IDC_EDIT_TRANS_AMT,
+                              ix + small_lbl + HGAP, iy,
+                              small_field, EDIT_H, 0);
+
+    make_button(parent, "Transfer", IDC_BTN_TRANSFER,
+                ix + small_lbl + HGAP + small_field + 20, iy,
+                btn_w, BTN_H);
+
+    /* === Group: Accounts List === */
+    gy += grp_trans_h + VGAP - 10;
+    int list_h = rc.bottom - gy - PAD;
+    if (list_h < 80) list_h = 80;
+    make_groupbox(parent, "Accounts", IDC_GRP_ACCLIST,
+                  x0, gy, grp_w, list_h);
+
+    hAccountsList = make_multiline(parent, IDC_ACCOUNTS_LIST,
+        x0 + GROUP_PAD, gy + GROUP_PAD + 2,
+        grp_w - 2 * GROUP_PAD, list_h - GROUP_PAD - 10,
+        hFontMono);
 }
 
 /* ============================================================
- *  Initialize banking filesystem directories
+ *  Dashboard Panel (Tab 2)
  * ============================================================ */
-static void init_banking_fs(void) {
-    /* Create /accounts directory */
-    accounts_dir = sys_create("accounts", 1, 0);
-    trace_ts("BOOT: Created /accounts directory (id=%d)", accounts_dir);
+static void create_dash_panel(HWND parent)
+{
+    RECT rc;
+    GetClientRect(parent, &rc);
+    int pw = rc.right;
+    int ph = rc.bottom;
 
-    /* Create /logs directory */
-    logs_dir = sys_create("logs", 1, 0);
-    trace_ts("BOOT: Created /logs directory (id=%d)", logs_dir);
+    /* Refresh button at top */
+    make_button(parent, "Refresh", IDC_BTN_REFRESH,
+                PAD, PAD, 100, BTN_H);
 
-    /* Create a transaction log file */
-    int logf = sys_create("tx_log", 0, logs_dir);
-    trace_ts("BOOT: Created /logs/tx_log (id=%d)", logf);
-
-    /* Enable deadlock prevention (resource ordering) */
-    g_kernel.deadlock.prevention_on = 1;
-    trace_ts("BOOT: Deadlock prevention ENABLED (resource ordering)");
-
-    trace_ts("BOOT: Banking system ready");
+    /* Big multiline edit for dashboard output */
+    hDashText = make_multiline(parent, IDC_DASH_TEXT,
+        PAD, PAD + BTN_H + 10,
+        pw - 2 * PAD, ph - BTN_H - PAD - 20,
+        hFontMono);
 }
 
 /* ============================================================
- *  Record a transaction in the local log
+ *  Config Panel (Tab 3)
  * ============================================================ */
-static void record_tx(const char *type, int from, int to,
-                      double amount, int pid, int mem) {
-    if (tx_count >= MAX_TRANSACTIONS) return;
-    GuiTransaction *tx = &txlog[tx_count];
-    tx->id       = tx_count + 1;
-    tx->from_acc = from;
-    tx->to_acc   = to;
-    tx->amount   = amount;
-    strncpy(tx->type, type, sizeof(tx->type) - 1);
-    tx->type[sizeof(tx->type) - 1] = '\0';
-    tx->timestamp = time(NULL);
-    tx->pid      = pid;
-    tx->mem_addr = mem;
-    tx_count++;
-}
+static void create_config_panel(HWND parent)
+{
+    int lbl_w = 170;
+    int field_w = 180;
+    int ix = PAD + 30;
+    int iy = PAD + 20;
 
-/* ============================================================
- *  Write account data to the OS filesystem
- * ============================================================ */
-static void write_account_file(int acc_idx, int pid) {
-    GuiAccount *a = &accounts[acc_idx];
-    char fname[64], data[256];
-    snprintf(fname, sizeof(fname), "acc_%03d", a->id);
+    /* Scheduler Algorithm */
+    make_label(parent, "Scheduler Algorithm:", ix, iy + 3, lbl_w, LABEL_H);
+    hComboSched = make_combo(parent, IDC_COMBO_SCHED,
+                             ix + lbl_w + HGAP, iy, field_w, 150);
+    SendMessageA(hComboSched, CB_ADDSTRING, 0, (LPARAM)"FCFS");
+    SendMessageA(hComboSched, CB_ADDSTRING, 0, (LPARAM)"SJF");
+    SendMessageA(hComboSched, CB_ADDSTRING, 0, (LPARAM)"Priority");
+    SendMessageA(hComboSched, CB_ADDSTRING, 0, (LPARAM)"Round Robin");
+    SendMessageA(hComboSched, CB_SETCURSEL, (WPARAM)g_kernel.sched_algo, 0);
 
-    int fid = sys_find(fname, accounts_dir);
-    if (fid < 0) {
-        /* File does not exist yet -- create it */
-        fid = sys_create(fname, 0, accounts_dir);
-        trace_ts("OS: Created file '%s' (fid=%d)", fname, fid);
+    iy += COMBO_H + 20;
+
+    /* Time Quantum */
+    make_label(parent, "Time Quantum (RR):", ix, iy + 3, lbl_w, LABEL_H);
+    hEditQuantum = make_edit(parent, IDC_EDIT_QUANTUM,
+                             ix + lbl_w + HGAP, iy, field_w, EDIT_H, 0);
+    {
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%d", g_kernel.sched_quantum);
+        SetWindowTextA(hEditQuantum, buf);
     }
 
-    if (fid >= 0) {
-        int fd = sys_open(fid, 2, pid);  /* mode 2 = write */
-        if (fd >= 0) {
-            int dlen = snprintf(data, sizeof(data),
-                                "%d|%s|%.2f", a->id, a->holder, a->balance);
-            int written = sys_write(fd, data, dlen);
-            sys_close(fd);
-            trace_ts("OS: File '%s' written (%d bytes, fd=%d)",
-                     fname, written, fd);
+    iy += EDIT_H + 20;
+
+    /* Memory Strategy */
+    make_label(parent, "Memory Strategy:", ix, iy + 3, lbl_w, LABEL_H);
+    hComboMem = make_combo(parent, IDC_COMBO_MEM,
+                           ix + lbl_w + HGAP, iy, field_w, 150);
+    SendMessageA(hComboMem, CB_ADDSTRING, 0, (LPARAM)"First Fit");
+    SendMessageA(hComboMem, CB_ADDSTRING, 0, (LPARAM)"Best Fit");
+    SendMessageA(hComboMem, CB_ADDSTRING, 0, (LPARAM)"Worst Fit");
+    SendMessageA(hComboMem, CB_ADDSTRING, 0, (LPARAM)"Next Fit");
+    SendMessageA(hComboMem, CB_SETCURSEL, (WPARAM)g_kernel.mem_strategy, 0);
+
+    iy += COMBO_H + 20;
+
+    /* Cache Algorithm */
+    make_label(parent, "Cache Algorithm:", ix, iy + 3, lbl_w, LABEL_H);
+    hComboCache = make_combo(parent, IDC_COMBO_CACHE,
+                             ix + lbl_w + HGAP, iy, field_w, 150);
+    SendMessageA(hComboCache, CB_ADDSTRING, 0, (LPARAM)"LRU");
+    SendMessageA(hComboCache, CB_ADDSTRING, 0, (LPARAM)"FIFO");
+    SendMessageA(hComboCache, CB_ADDSTRING, 0, (LPARAM)"Clock");
+    SendMessageA(hComboCache, CB_SETCURSEL, (WPARAM)g_kernel.cache_algo, 0);
+
+    iy += COMBO_H + 20;
+
+    /* Disk Scheduling */
+    make_label(parent, "Disk Scheduling:", ix, iy + 3, lbl_w, LABEL_H);
+    hComboDisk = make_combo(parent, IDC_COMBO_DISK,
+                            ix + lbl_w + HGAP, iy, field_w, 150);
+    SendMessageA(hComboDisk, CB_ADDSTRING, 0, (LPARAM)"FCFS");
+    SendMessageA(hComboDisk, CB_ADDSTRING, 0, (LPARAM)"SSTF");
+    SendMessageA(hComboDisk, CB_ADDSTRING, 0, (LPARAM)"SCAN");
+    SendMessageA(hComboDisk, CB_ADDSTRING, 0, (LPARAM)"C-SCAN");
+    SendMessageA(hComboDisk, CB_SETCURSEL, (WPARAM)g_kernel.io.algo, 0);
+
+    iy += COMBO_H + 35;
+
+    /* Apply button */
+    make_button(parent, "Apply Changes", IDC_BTN_APPLY,
+                ix, iy, 140, BTN_H);
+}
+
+/* ============================================================
+ *  Trace Panel (Tab 4)
+ * ============================================================ */
+static void create_trace_panel(HWND parent)
+{
+    RECT rc;
+    GetClientRect(parent, &rc);
+    int pw = rc.right;
+    int ph = rc.bottom;
+
+    /* Clear Log button at top */
+    make_button(parent, "Clear Log", IDC_BTN_CLEAR_LOG,
+                PAD, PAD, 100, BTN_H);
+
+    /* Big multiline edit for trace output */
+    hTraceText = make_multiline(parent, IDC_TRACE_TEXT,
+        PAD, PAD + BTN_H + 10,
+        pw - 2 * PAD, ph - BTN_H - PAD - 20,
+        hFontMono);
+}
+
+/* ============================================================
+ *  Tab Switching
+ * ============================================================ */
+static void switch_tab(int idx)
+{
+    ShowWindow(hPanelBank,   (idx == 0) ? SW_SHOW : SW_HIDE);
+    ShowWindow(hPanelDash,   (idx == 1) ? SW_SHOW : SW_HIDE);
+    ShowWindow(hPanelConfig, (idx == 2) ? SW_SHOW : SW_HIDE);
+    ShowWindow(hPanelTrace,  (idx == 3) ? SW_SHOW : SW_HIDE);
+
+    /* Auto-refresh when switching to Dashboard or Trace */
+    if (idx == 1) refresh_dashboard();
+    if (idx == 3) update_trace_display();
+}
+
+/* ============================================================
+ *  Resize Handling
+ * ============================================================ */
+static void resize_panels(int w, int h)
+{
+    if (!hTabCtrl) return;
+
+    MoveWindow(hTabCtrl, 0, 0, w, h, TRUE);
+
+    RECT tabrc;
+    GetClientRect(hTabCtrl, &tabrc);
+    TabCtrl_AdjustRect(hTabCtrl, FALSE, &tabrc);
+
+    int px = tabrc.left;
+    int py = tabrc.top;
+    int pw = tabrc.right - tabrc.left;
+    int ph = tabrc.bottom - tabrc.top;
+
+    MoveWindow(hPanelBank,   px, py, pw, ph, TRUE);
+    MoveWindow(hPanelDash,   px, py, pw, ph, TRUE);
+    MoveWindow(hPanelConfig, px, py, pw, ph, TRUE);
+    MoveWindow(hPanelTrace,  px, py, pw, ph, TRUE);
+
+    /* Resize the full-panel multiline edits */
+    if (hDashText) {
+        MoveWindow(hDashText, PAD, PAD + BTN_H + 10,
+                   pw - 2 * PAD, ph - BTN_H - PAD - 20, TRUE);
+    }
+    if (hTraceText) {
+        MoveWindow(hTraceText, PAD, PAD + BTN_H + 10,
+                   pw - 2 * PAD, ph - BTN_H - PAD - 20, TRUE);
+    }
+
+    /* Resize accounts list in banking panel to fill remaining space */
+    if (hAccountsList) {
+        HWND grp = GetDlgItem(hPanelBank, IDC_GRP_ACCLIST);
+        if (grp) {
+            RECT grp_rc;
+            GetWindowRect(grp, &grp_rc);
+            MapWindowPoints(NULL, hPanelBank, (LPPOINT)&grp_rc, 2);
+
+            int new_h = ph - grp_rc.top - PAD;
+            if (new_h < 80) new_h = 80;
+            int grp_w = pw - 2 * PAD;
+            MoveWindow(grp, PAD, grp_rc.top, grp_w, new_h, TRUE);
+            MoveWindow(hAccountsList,
+                       PAD + GROUP_PAD, grp_rc.top + GROUP_PAD + 2,
+                       grp_w - 2 * GROUP_PAD, new_h - GROUP_PAD - 10,
+                       TRUE);
         }
     }
 }
 
 /* ============================================================
- *  Banking Operation: Create Account
+ *  Refresh: Accounts List
  * ============================================================ */
-static void gui_create_account(const char *name, double initial) {
-    trace_clear();
-
-    if (acc_count >= MAX_ACCOUNTS) {
-        trace_ts("BANK: ERROR -- account table full (max %d)", MAX_ACCOUNTS);
-        post_trace();
-        return;
-    }
-    if (strlen(name) == 0) {
-        trace_ts("BANK: ERROR -- account holder name is empty");
-        post_trace();
-        return;
-    }
-    if (initial < 0) {
-        trace_ts("BANK: ERROR -- initial deposit cannot be negative");
-        post_trace();
-        return;
-    }
-
-    trace_ts("BANK: Creating account for '%s' ($%.2f)", name, initial);
-
-    /* 1. Fork a process for this operation */
-    int pid = sys_fork("create_acc", 3, 4, NULL, NULL);
-    trace_ts("OS: Process P%d 'create_acc' created (NEW)", pid);
-
-    /* 2. Transition to RUNNING */
-    sys_set_state(pid, PROC_READY);
-    sys_set_state(pid, PROC_RUNNING);
-    trace_ts("OS: P%d: NEW -> READY -> RUNNING", pid);
-
-    /* 3. Allocate memory for the account record */
-    int mem = sys_alloc(pid, 1);
-    trace_ts("OS: Memory allocated: 1 KB at address %d (%s)",
-             mem, mem >= 0 ? "OK" : "FAILED");
-
-    /* 4. Populate local account */
-    int idx = acc_count;
-    GuiAccount *a = &accounts[idx];
-    a->id          = acc_count + 1;
-    strncpy(a->holder, name, OS_MAX_NAME - 1);
-    a->holder[OS_MAX_NAME - 1] = '\0';
-    a->balance     = initial;
-    a->active      = 1;
-    a->resource_id = a->id;  /* resource id = account id (for deadlock mgr) */
-
-    /* 5. Set max need for this resource so Banker's algorithm works */
-    sys_set_max_need(pid, a->resource_id, 2);
-
-    /* 6. Cache access for the new account page */
-    int cached = sys_cache_access(a->id);
-    trace_ts("OS: Cache access page %d: %s", a->id, cached ? "HIT" : "MISS");
-
-    /* 7. Create account file in OS filesystem */
-    char fname[64];
-    snprintf(fname, sizeof(fname), "acc_%03d", a->id);
-    a->file_id = sys_create(fname, 0, accounts_dir);
-    trace_ts("OS: Created file '/accounts/%s' (fid=%d)", fname, a->file_id);
-
-    /* 8. Write initial data */
-    if (a->file_id >= 0) {
-        int fd = sys_open(a->file_id, 2, pid);
-        char data[256];
-        int dlen = snprintf(data, sizeof(data),
-                            "%d|%s|%.2f", a->id, a->holder, a->balance);
-        int written = sys_write(fd, data, dlen);
-        sys_close(fd);
-        trace_ts("OS: File write: %d bytes to fd=%d", written, fd);
-    }
-
-    /* 9. Disk I/O for persistence */
-    sys_io_request(a->id * 17 % OS_DISK_SIZE);
-    sys_io_process();
-    trace_ts("OS: Disk I/O processed (track %d)", a->id * 17 % OS_DISK_SIZE);
-
-    /* 10. Record transaction */
-    acc_count++;
-    record_tx("CREATE", 0, a->id, initial, pid, mem);
-
-    /* 11. Cleanup: free memory, terminate process */
-    sys_free_all(pid);
-    sys_set_state(pid, PROC_TERMINATED);
-    trace_ts("OS: P%d: RUNNING -> TERMINATED (resources freed)", pid);
-
-    trace_ts("BANK: Account #%d created for '%s' (balance: $%.2f)",
-             a->id, a->holder, a->balance);
-
-    post_trace();
-    refresh_dashboard();
-    refresh_accounts_list();
-}
-
-/* ============================================================
- *  Banking Operation: Deposit
- * ============================================================ */
-static void gui_deposit(int acc_id, double amount) {
-    trace_clear();
-
-    /* Validate */
-    if (acc_id < 1 || acc_id > acc_count) {
-        trace_ts("BANK: ERROR -- invalid account ID %d", acc_id);
-        post_trace();
-        return;
-    }
-    if (amount <= 0) {
-        trace_ts("BANK: ERROR -- deposit amount must be positive");
-        post_trace();
-        return;
-    }
-
-    int idx = acc_id - 1;
-    trace_ts("BANK: Deposit $%.2f to Account #%d (%s)",
-             amount, acc_id, accounts[idx].holder);
-
-    /* Fork process */
-    int pid = sys_fork("deposit", 4, 5, NULL, NULL);
-    trace_ts("OS: Process P%d 'deposit' created", pid);
-
-    sys_set_state(pid, PROC_READY);
-    sys_set_state(pid, PROC_RUNNING);
-    trace_ts("OS: P%d: NEW -> READY -> RUNNING", pid);
-
-    /* Allocate memory */
-    int mem = sys_alloc(pid, 1);
-    trace_ts("OS: Memory allocated: 1 KB at address %d", mem);
-
-    /* Set max need and request resource lock */
-    sys_set_max_need(pid, acc_id, 2);
-    int r = sys_lock(pid, acc_id, 1);
-    if (r == 0)
-        trace_ts("OS: Resource lock on Account #%d: GRANTED (Banker's: SAFE)",
-                 acc_id);
-    else
-        trace_ts("OS: Resource lock on Account #%d: DENIED (unsafe state!)",
-                 acc_id);
-
-    /* Cache access */
-    int cached = sys_cache_access(acc_id);
-    trace_ts("OS: Cache access page %d: %s", acc_id, cached ? "HIT" : "MISS");
-
-    /* Update balance */
-    double old_bal = accounts[idx].balance;
-    accounts[idx].balance += amount;
-    trace_ts("BANK: Balance updated: $%.2f -> $%.2f",
-             old_bal, accounts[idx].balance);
-
-    /* Write to filesystem */
-    write_account_file(idx, pid);
-
-    /* Disk I/O */
-    sys_io_request(acc_id * 13 % OS_DISK_SIZE);
-    sys_io_process();
-    trace_ts("OS: Disk I/O processed");
-
-    /* Record transaction */
-    record_tx("DEPOSIT", 0, acc_id, amount, pid, mem);
-
-    /* Cleanup */
-    sys_unlock(pid, acc_id, 1);
-    sys_free_all(pid);
-    sys_set_state(pid, PROC_TERMINATED);
-    trace_ts("OS: P%d: RUNNING -> TERMINATED (resources freed)", pid);
-
-    trace_ts("BANK: Deposit complete. New balance: $%.2f",
-             accounts[idx].balance);
-
-    post_trace();
-    refresh_dashboard();
-    refresh_accounts_list();
-}
-
-/* ============================================================
- *  Banking Operation: Withdraw
- * ============================================================ */
-static void gui_withdraw(int acc_id, double amount) {
-    trace_clear();
-
-    if (acc_id < 1 || acc_id > acc_count) {
-        trace_ts("BANK: ERROR -- invalid account ID %d", acc_id);
-        post_trace();
-        return;
-    }
-    if (amount <= 0) {
-        trace_ts("BANK: ERROR -- withdrawal amount must be positive");
-        post_trace();
-        return;
-    }
-
-    int idx = acc_id - 1;
-
-    if (accounts[idx].balance < amount) {
-        trace_ts("BANK: ERROR -- insufficient funds ($%.2f < $%.2f)",
-                 accounts[idx].balance, amount);
-        post_trace();
-        return;
-    }
-
-    trace_ts("BANK: Withdraw $%.2f from Account #%d (%s)",
-             amount, acc_id, accounts[idx].holder);
-
-    /* Fork process */
-    int pid = sys_fork("withdraw", 4, 5, NULL, NULL);
-    trace_ts("OS: Process P%d 'withdraw' created", pid);
-
-    sys_set_state(pid, PROC_READY);
-    sys_set_state(pid, PROC_RUNNING);
-    trace_ts("OS: P%d: NEW -> READY -> RUNNING", pid);
-
-    /* Allocate memory */
-    int mem = sys_alloc(pid, 1);
-    trace_ts("OS: Memory allocated: 1 KB at address %d", mem);
-
-    /* Resource lock */
-    sys_set_max_need(pid, acc_id, 2);
-    int r = sys_lock(pid, acc_id, 1);
-    if (r == 0)
-        trace_ts("OS: Resource lock on Account #%d: GRANTED (Banker's: SAFE)",
-                 acc_id);
-    else
-        trace_ts("OS: Resource lock on Account #%d: DENIED (unsafe state!)",
-                 acc_id);
-
-    /* Cache access */
-    int cached = sys_cache_access(acc_id);
-    trace_ts("OS: Cache access page %d: %s", acc_id, cached ? "HIT" : "MISS");
-
-    /* Update balance */
-    double old_bal = accounts[idx].balance;
-    accounts[idx].balance -= amount;
-    trace_ts("BANK: Balance updated: $%.2f -> $%.2f",
-             old_bal, accounts[idx].balance);
-
-    /* Write to filesystem */
-    write_account_file(idx, pid);
-
-    /* Disk I/O */
-    sys_io_request(acc_id * 13 % OS_DISK_SIZE);
-    sys_io_process();
-    trace_ts("OS: Disk I/O processed");
-
-    /* Record transaction */
-    record_tx("WITHDRAW", acc_id, 0, amount, pid, mem);
-
-    /* Cleanup */
-    sys_unlock(pid, acc_id, 1);
-    sys_free_all(pid);
-    sys_set_state(pid, PROC_TERMINATED);
-    trace_ts("OS: P%d: RUNNING -> TERMINATED (resources freed)", pid);
-
-    trace_ts("BANK: Withdrawal complete. New balance: $%.2f",
-             accounts[idx].balance);
-
-    post_trace();
-    refresh_dashboard();
-    refresh_accounts_list();
-}
-
-/* ============================================================
- *  Banking Operation: Transfer
- * ============================================================ */
-static void gui_transfer(int from_id, int to_id, double amount) {
-    trace_clear();
-
-    if (from_id < 1 || from_id > acc_count) {
-        trace_ts("BANK: ERROR -- invalid source account ID %d", from_id);
-        post_trace();
-        return;
-    }
-    if (to_id < 1 || to_id > acc_count) {
-        trace_ts("BANK: ERROR -- invalid target account ID %d", to_id);
-        post_trace();
-        return;
-    }
-    if (from_id == to_id) {
-        trace_ts("BANK: ERROR -- source and target accounts are the same");
-        post_trace();
-        return;
-    }
-    if (amount <= 0) {
-        trace_ts("BANK: ERROR -- transfer amount must be positive");
-        post_trace();
-        return;
-    }
-
-    int fi = from_id - 1;
-    int ti = to_id - 1;
-
-    if (accounts[fi].balance < amount) {
-        trace_ts("BANK: ERROR -- insufficient funds in Account #%d ($%.2f < $%.2f)",
-                 from_id, accounts[fi].balance, amount);
-        post_trace();
-        return;
-    }
-
-    trace_ts("BANK: Transfer $%.2f from Account #%d -> Account #%d",
-             amount, from_id, to_id);
-
-    /* Fork process */
-    int pid = sys_fork("transfer", 2, 8, NULL, NULL);
-    trace_ts("OS: Process P%d 'transfer' created", pid);
-
-    sys_set_state(pid, PROC_READY);
-    sys_set_state(pid, PROC_RUNNING);
-    trace_ts("OS: P%d: NEW -> READY -> RUNNING", pid);
-
-    /* Allocate memory */
-    int mem = sys_alloc(pid, 2);
-    trace_ts("OS: Memory allocated: 2 KB at address %d", mem);
-
-    /* Deadlock prevention: lock resources in ascending order */
-    int first  = (from_id < to_id) ? from_id : to_id;
-    int second = (from_id < to_id) ? to_id   : from_id;
-
-    trace_ts("OS: Deadlock prevention -- locking in order: R%d then R%d",
-             first, second);
-
-    /* Set max need for both resources */
-    sys_set_max_need(pid, first, 2);
-    sys_set_max_need(pid, second, 2);
-
-    /* Lock first resource */
-    int r1 = sys_lock(pid, first, 1);
-    if (r1 == 0)
-        trace_ts("OS: Resource lock on Account #%d: GRANTED (Banker's: SAFE)",
-                 first);
-    else
-        trace_ts("OS: Resource lock on Account #%d: DENIED!", first);
-
-    /* Lock second resource */
-    int r2 = sys_lock(pid, second, 1);
-    if (r2 == 0)
-        trace_ts("OS: Resource lock on Account #%d: GRANTED (Banker's: SAFE)",
-                 second);
-    else
-        trace_ts("OS: Resource lock on Account #%d: DENIED!", second);
-
-    /* Cache access for both accounts */
-    int c1 = sys_cache_access(from_id);
-    trace_ts("OS: Cache access page %d (source): %s",
-             from_id, c1 ? "HIT" : "MISS");
-    int c2 = sys_cache_access(to_id);
-    trace_ts("OS: Cache access page %d (target): %s",
-             to_id, c2 ? "HIT" : "MISS");
-
-    /* Perform transfer */
-    double old_from = accounts[fi].balance;
-    double old_to   = accounts[ti].balance;
-    accounts[fi].balance -= amount;
-    accounts[ti].balance += amount;
-    trace_ts("BANK: Account #%d: $%.2f -> $%.2f",
-             from_id, old_from, accounts[fi].balance);
-    trace_ts("BANK: Account #%d: $%.2f -> $%.2f",
-             to_id, old_to, accounts[ti].balance);
-
-    /* Write both account files */
-    write_account_file(fi, pid);
-    write_account_file(ti, pid);
-
-    /* Disk I/O */
-    sys_io_request(from_id * 11 % OS_DISK_SIZE);
-    sys_io_request(to_id * 11 % OS_DISK_SIZE);
-    sys_io_process();
-    trace_ts("OS: Disk I/O processed (2 requests)");
-
-    /* Record transaction */
-    record_tx("TRANSFER", from_id, to_id, amount, pid, mem);
-
-    /* Unlock in reverse order (good practice) */
-    sys_unlock(pid, second, 1);
-    sys_unlock(pid, first, 1);
-    trace_ts("OS: Resources R%d, R%d released", first, second);
-
-    /* Cleanup */
-    sys_free_all(pid);
-    sys_set_state(pid, PROC_TERMINATED);
-    trace_ts("OS: P%d: RUNNING -> TERMINATED (resources freed)", pid);
-
-    trace_ts("BANK: Transfer complete");
-
-    post_trace();
-    refresh_dashboard();
-    refresh_accounts_list();
-}
-
-/* ============================================================
- *  Banking Operation: Check Balance
- * ============================================================ */
-static void gui_check_balance(int acc_id) {
-    trace_clear();
-
-    if (acc_id < 1 || acc_id > acc_count) {
-        trace_ts("BANK: ERROR -- invalid account ID %d", acc_id);
-        post_trace();
-        return;
-    }
-
-    int idx = acc_id - 1;
-    trace_ts("BANK: Balance inquiry for Account #%d (%s)",
-             acc_id, accounts[idx].holder);
-
-    /* Fork a lightweight process */
-    int pid = sys_fork("balance_chk", 5, 2, NULL, NULL);
-    trace_ts("OS: Process P%d 'balance_chk' created", pid);
-
-    sys_set_state(pid, PROC_READY);
-    sys_set_state(pid, PROC_RUNNING);
-    trace_ts("OS: P%d: NEW -> READY -> RUNNING", pid);
-
-    /* Allocate memory */
-    int mem = sys_alloc(pid, 1);
-    trace_ts("OS: Memory allocated: 1 KB at address %d", mem);
-
-    /* Cache access -- shows hit/miss */
-    int cached = sys_cache_access(acc_id);
-    trace_ts("OS: Cache access page %d: %s", acc_id, cached ? "HIT" : "MISS");
-
-    /* Read from filesystem to show OS interaction */
-    char fname[64];
-    snprintf(fname, sizeof(fname), "acc_%03d", acc_id);
-    int fid = sys_find(fname, accounts_dir);
-    if (fid >= 0) {
-        int fd = sys_open(fid, 1, pid);  /* mode 1 = read */
-        if (fd >= 0) {
-            char rbuf[256];
-            int nread = sys_read(fd, rbuf, sizeof(rbuf) - 1);
-            if (nread > 0) {
-                rbuf[nread] = '\0';
-                trace_ts("OS: File read: '%s' (%d bytes)", rbuf, nread);
-            }
-            sys_close(fd);
-        }
-    } else {
-        trace_ts("OS: File '%s' not found in /accounts", fname);
-    }
-
-    /* Disk I/O for the read */
-    sys_io_request(acc_id * 7 % OS_DISK_SIZE);
-    sys_io_process();
-    trace_ts("OS: Disk I/O processed (read)");
-
-    /* Report balance */
-    trace_ts("BANK: Account #%d (%s) -- Balance: $%.2f",
-             acc_id, accounts[idx].holder, accounts[idx].balance);
-
-    /* Show transaction count for this account */
-    int tc = 0;
-    for (int i = 0; i < tx_count; i++) {
-        if (txlog[i].from_acc == acc_id || txlog[i].to_acc == acc_id)
-            tc++;
-    }
-    trace_ts("BANK: Total transactions involving this account: %d", tc);
-
-    /* Cleanup */
-    sys_free_all(pid);
-    sys_set_state(pid, PROC_TERMINATED);
-    trace_ts("OS: P%d: RUNNING -> TERMINATED (resources freed)", pid);
-
-    post_trace();
-    refresh_dashboard();
-}
-
-/* ============================================================
- *  Apply OS Configuration from combo boxes
- * ============================================================ */
-static void gui_apply_config(void) {
-    trace_clear();
-
-    /* Scheduler */
-    int si = (int)SendMessageA(hCmbSched, CB_GETCURSEL, 0, 0);
-    if (si >= 0 && si <= 3) {
-        SchedulerAlgo algo = (SchedulerAlgo)si;
-        int quantum = (algo == SCHED_ROUND_ROBIN) ? 10 : 0;
-        sys_set_scheduler(algo, quantum);
-        const char *names[] = {"FCFS", "SJF", "Priority", "Round Robin"};
-        trace_ts("CONFIG: Scheduler set to %s", names[si]);
-    }
-
-    /* Memory strategy */
-    int mi = (int)SendMessageA(hCmbMem, CB_GETCURSEL, 0, 0);
-    if (mi >= 0 && mi <= 3) {
-        sys_set_mem_strategy((MemStrategy)mi);
-        const char *names[] = {"First Fit", "Best Fit", "Worst Fit", "Next Fit"};
-        trace_ts("CONFIG: Memory strategy set to %s", names[mi]);
-    }
-
-    /* Cache algorithm */
-    int ci = (int)SendMessageA(hCmbCache, CB_GETCURSEL, 0, 0);
-    if (ci >= 0 && ci <= 2) {
-        sys_set_cache_algo((CacheAlgo)ci);
-        const char *names[] = {"LRU", "FIFO", "Clock"};
-        trace_ts("CONFIG: Cache algorithm set to %s", names[ci]);
-    }
-
-    /* Disk algorithm */
-    int di = (int)SendMessageA(hCmbDisk, CB_GETCURSEL, 0, 0);
-    if (di >= 0 && di <= 3) {
-        sys_set_disk_algo((DiskAlgo)di);
-        const char *names[] = {"FCFS", "SSTF", "SCAN", "C-SCAN"};
-        trace_ts("CONFIG: Disk I/O algorithm set to %s", names[di]);
-    }
-
-    trace_ts("CONFIG: All settings applied successfully");
-
-    post_trace();
-    refresh_dashboard();
-}
-
-/* ============================================================
- *  Refresh the OS Kernel Dashboard (right panel)
- * ============================================================ */
-static void refresh_dashboard(void) {
+static void refresh_accounts(void)
+{
     char buf[4096];
     int len = 0;
-    int bsz = (int)sizeof(buf);
 
-    /* --- PROCESSES --- */
-    int total = 0, active = 0, ready = 0, running = 0, terminated = 0;
-    for (int i = 0; i < OS_MAX_PROCESSES; i++) {
-        if (g_kernel.procs[i].active) {
-            total++;
-            switch (g_kernel.procs[i].state) {
-                case PROC_READY:      ready++;   active++; break;
-                case PROC_RUNNING:    running++; active++; break;
-                case PROC_NEW:        active++;            break;
-                case PROC_WAITING:    active++;            break;
-                case PROC_TERMINATED: terminated++;        break;
-            }
+    if (acc_count == 0) {
+        len += snprintf(buf + len, sizeof(buf) - (size_t)len,
+                        "  (no accounts yet)\r\n");
+    } else {
+        len += snprintf(buf + len, sizeof(buf) - (size_t)len,
+            "  %-4s  %-20s  %12s  %s\r\n",
+            "ID", "Holder", "Balance", "Status");
+        len += snprintf(buf + len, sizeof(buf) - (size_t)len,
+            "  %-4s  %-20s  %12s  %s\r\n",
+            "----", "--------------------", "------------", "------");
+
+        for (int i = 0; i < acc_count; i++) {
+            len += snprintf(buf + len, sizeof(buf) - (size_t)len,
+                "  #%-3d  %-20s  $%11.2f  %s\r\n",
+                accounts[i].id,
+                accounts[i].holder,
+                accounts[i].balance,
+                accounts[i].active ? "ACTIVE" : "CLOSED");
         }
     }
-    /* Also count non-active terminated */
-    for (int i = 0; i < OS_MAX_PROCESSES; i++) {
-        if (!g_kernel.procs[i].active && g_kernel.procs[i].pid > 0)
-            terminated++;
-    }
 
-    const char *sched_names[] = {"FCFS", "SJF", "PRIORITY", "ROUND ROBIN"};
+    SetWindowTextA(hAccountsList, buf);
+}
 
-    len += snprintf(buf + len, bsz - len,
-        "========== PROCESSES ==========\r\n");
-    len += snprintf(buf + len, bsz - len,
-        "Created: %d   Active: %d   Done: %d\r\n",
-        g_kernel.next_pid - 1, total, terminated);
-    len += snprintf(buf + len, bsz - len,
-        "Ready: %d   Running: %d\r\n", ready, running);
-    len += snprintf(buf + len, bsz - len,
-        "Scheduler: %s", sched_names[g_kernel.sched_algo]);
-    if (g_kernel.sched_algo == SCHED_ROUND_ROBIN)
-        len += snprintf(buf + len, bsz - len,
-            " (q=%d)", g_kernel.sched_quantum);
-    len += snprintf(buf + len, bsz - len, "\r\n");
-    len += snprintf(buf + len, bsz - len,
-        "Clock Tick: %d\r\n", g_kernel.clock_tick);
+/* ============================================================
+ *  Refresh: Dashboard
+ * ============================================================ */
+static void refresh_dashboard(void)
+{
+    char buf[8192];
+    int len = 0;
 
-    /* --- MEMORY --- */
+    /* Gather stats */
     MemStats ms;
     sys_mem_stats(&ms);
-    const char *mem_names[] = {"FIRST FIT", "BEST FIT", "WORST FIT", "NEXT FIT"};
-
-    len += snprintf(buf + len, bsz - len,
-        "\r\n========== MEMORY ==========\r\n");
-    len += snprintf(buf + len, bsz - len,
-        "Used: %d / %d KB\r\n", ms.used_kb, ms.total_kb);
-    len += snprintf(buf + len, bsz - len,
-        "Free: %d KB (%d blocks)\r\n", ms.free_kb, ms.free_blocks);
-    len += snprintf(buf + len, bsz - len,
-        "Strategy: %s\r\n", mem_names[ms.strategy]);
-    len += snprintf(buf + len, bsz - len,
-        "Fragmentation: %.1f%%\r\n", ms.fragmentation * 100.0f);
-    len += snprintf(buf + len, bsz - len,
-        "Total blocks: %d\r\n", ms.block_count);
-
-    /* --- CACHE --- */
     CacheStats cs;
     sys_cache_stats(&cs);
-    const char *cache_names[] = {"LRU", "FIFO", "CLOCK"};
 
-    len += snprintf(buf + len, bsz - len,
-        "\r\n========== CACHE (%s) ==========\r\n",
-        cache_names[cs.algo]);
-    len += snprintf(buf + len, bsz - len,
-        "Entries: %d / %d\r\n", cs.entries_used, cs.cache_size);
-    len += snprintf(buf + len, bsz - len,
-        "Hits: %d   Misses: %d\r\n", cs.hits, cs.misses);
-    len += snprintf(buf + len, bsz - len,
-        "Hit Ratio: %.1f%%\r\n", cs.hit_ratio * 100.0f);
-
-    /* --- DEADLOCK --- */
-    len += snprintf(buf + len, bsz - len,
-        "\r\n========== DEADLOCK ==========\r\n");
-    len += snprintf(buf + len, bsz - len,
-        "Prevention: %s\r\n",
-        g_kernel.deadlock.prevention_on ? "ON (resource ordering)" : "OFF");
-    len += snprintf(buf + len, bsz - len,
-        "Detected: %d\r\n", g_kernel.deadlock.deadlock_count);
-
-    /* Show available resources (first 5 that are meaningful) */
-    len += snprintf(buf + len, bsz - len, "Available: [");
-    for (int r = 0; r < 5; r++) {
-        len += snprintf(buf + len, bsz - len, "%s%d",
-            r > 0 ? "," : "", g_kernel.deadlock.available[r]);
+    /* Count processes */
+    int total = 0, active = 0, terminated = 0;
+    for (int i = 0; i < OS_MAX_PROCESSES; i++) {
+        if (g_kernel.procs[i].pid > 0) {
+            total++;
+            if (g_kernel.procs[i].active)
+                active++;
+            else
+                terminated++;
+        }
     }
-    len += snprintf(buf + len, bsz - len, "]\r\n");
 
-    /* --- FILE SYSTEM --- */
-    int files = 0, dirs = 0;
+    /* Count filesystem entries */
+    int file_count = 0, dir_count = 0, open_fds = 0;
     for (int i = 0; i < OS_MAX_FILES; i++) {
         if (g_kernel.fs_nodes[i].active) {
             if (g_kernel.fs_nodes[i].is_dir)
-                dirs++;
+                dir_count++;
             else
-                files++;
+                file_count++;
         }
     }
+    for (int i = 0; i < OS_MAX_OPEN_FDS; i++) {
+        if (g_kernel.fd_table[i].active)
+            open_fds++;
+    }
 
-    len += snprintf(buf + len, bsz - len,
-        "\r\n========== FILE SYSTEM ==========\r\n");
-    len += snprintf(buf + len, bsz - len,
-        "Files: %d   Dirs: %d\r\n", files, dirs);
-    len += snprintf(buf + len, bsz - len,
-        "Open FDs: %d\r\n", g_kernel.fd_count);
+    /* Name tables */
+    const char *sn[] = {"FCFS", "SJF", "PRIORITY", "ROUND ROBIN"};
+    const char *mn[] = {"FIRST FIT", "BEST FIT", "WORST FIT", "NEXT FIT"};
+    const char *cn[] = {"LRU", "FIFO", "CLOCK"};
+    const char *dn[] = {"FCFS", "SSTF", "SCAN", "C-SCAN"};
 
-    /* --- I/O --- */
-    const char *disk_names[] = {"FCFS", "SSTF", "SCAN", "C-SCAN"};
+    /* Build dashboard text */
+    len += snprintf(buf + len, sizeof(buf) - (size_t)len,
+        "PROCESSES\r\n"
+        "  Total: %d   Active: %d   Terminated: %d\r\n"
+        "  Scheduler: %s",
+        total, active, terminated, sn[g_kernel.sched_algo]);
 
-    len += snprintf(buf + len, bsz - len,
-        "\r\n========== I/O (%s) ==========\r\n",
-        disk_names[g_kernel.io.algo]);
-    len += snprintf(buf + len, bsz - len,
-        "Head: track %d  Dir: %s\r\n",
-        g_kernel.io.head_pos,
-        g_kernel.io.direction ? "--->" : "<---");
-    len += snprintf(buf + len, bsz - len,
-        "Total seeks: %d\r\n", g_kernel.io.total_seek);
-    len += snprintf(buf + len, bsz - len,
-        "Total ops: %d\r\n", g_kernel.io.total_ops);
-    len += snprintf(buf + len, bsz - len,
-        "Queue: %d pending\r\n", g_kernel.io.queue_len);
-    len += snprintf(buf + len, bsz - len,
-        "Buf reads: %d  writes: %d  hits: %d\r\n",
+    if (g_kernel.sched_algo == SCHED_ROUND_ROBIN) {
+        len += snprintf(buf + len, sizeof(buf) - (size_t)len,
+            "   Quantum: %d ms", g_kernel.sched_quantum);
+    }
+    len += snprintf(buf + len, sizeof(buf) - (size_t)len, "\r\n\r\n");
+
+    len += snprintf(buf + len, sizeof(buf) - (size_t)len,
+        "MEMORY\r\n"
+        "  Used: %d / %d KB   Free: %d KB\r\n"
+        "  Strategy: %s   Fragmentation: %.1f%%\r\n"
+        "  Blocks: %d allocated, %d free\r\n\r\n",
+        ms.used_kb, ms.total_kb, ms.free_kb,
+        mn[ms.strategy], ms.fragmentation * 100.0f,
+        ms.block_count - ms.free_blocks, ms.free_blocks);
+
+    float ratio = (cs.hits + cs.misses > 0)
+        ? (float)cs.hits / (float)(cs.hits + cs.misses) * 100.0f
+        : 0.0f;
+    len += snprintf(buf + len, sizeof(buf) - (size_t)len,
+        "CACHE\r\n"
+        "  Algorithm: %s   Entries: %d / %d\r\n"
+        "  Hits: %d   Misses: %d   Ratio: %.1f%%\r\n\r\n",
+        cn[g_kernel.cache_algo],
+        cs.entries_used, cs.cache_size,
+        cs.hits, cs.misses, ratio);
+
+    len += snprintf(buf + len, sizeof(buf) - (size_t)len,
+        "DEADLOCK\r\n"
+        "  Prevention: %s   Detected: %d\r\n\r\n",
+        g_kernel.deadlock.prevention_on ? "ON (Banker's)" : "OFF",
+        g_kernel.deadlock.deadlock_count);
+
+    len += snprintf(buf + len, sizeof(buf) - (size_t)len,
+        "FILE SYSTEM\r\n"
+        "  Files: %d   Directories: %d   Open FDs: %d\r\n\r\n",
+        file_count, dir_count, open_fds);
+
+    len += snprintf(buf + len, sizeof(buf) - (size_t)len,
+        "I/O SUBSYSTEM\r\n"
+        "  Disk: %s   Head: track %d   Queue: %d\r\n"
+        "  Total seek: %d   Operations: %d\r\n"
+        "  Buffer reads: %d   writes: %d   hits: %d\r\n\r\n",
+        dn[g_kernel.io.algo],
+        g_kernel.io.head_pos, g_kernel.io.queue_len,
+        g_kernel.io.total_seek, g_kernel.io.total_ops,
         g_kernel.io.buf_reads, g_kernel.io.buf_writes,
         g_kernel.io.buf_hits);
 
-    SetWindowTextA(hDashboard, buf);
+    /* Uptime */
+    time_t now = time(NULL);
+    int uptime = (int)(now - g_kernel.boot_time);
+    len += snprintf(buf + len, sizeof(buf) - (size_t)len,
+        "SYSTEM\r\n"
+        "  Uptime: %dm %ds   Clock ticks: %d\r\n"
+        "  Bank accounts: %d / 20\r\n",
+        uptime / 60, uptime % 60, g_kernel.clock_tick,
+        acc_count);
+
+    SetWindowTextA(hDashText, buf);
 }
 
 /* ============================================================
- *  Refresh accounts list display
+ *  Update: Trace Display
  * ============================================================ */
-static void refresh_accounts_list(void) {
-    char buf[4096];
-    int len = 0;
-    int bsz = (int)sizeof(buf);
+static void update_trace_display(void)
+{
+    SetWindowTextA(hTraceText, trace_buf);
+    /* Scroll to bottom */
+    int len = GetWindowTextLengthA(hTraceText);
+    SendMessageA(hTraceText, EM_SETSEL, (WPARAM)len, (LPARAM)len);
+    SendMessageA(hTraceText, EM_SCROLLCARET, 0, 0);
+}
 
-    if (acc_count == 0) {
-        snprintf(buf, bsz, "(no accounts yet)");
-    } else {
-        len += snprintf(buf + len, bsz - len,
-            " ID  %-20s  %12s\r\n", "Account Holder", "Balance");
-        len += snprintf(buf + len, bsz - len,
-            " --- %-20s  %12s\r\n",
-            "--------------------", "------------");
-        for (int i = 0; i < acc_count; i++) {
-            GuiAccount *a = &accounts[i];
-            if (a->active) {
-                len += snprintf(buf + len, bsz - len,
-                    " #%-2d  %-20s  $%10.2f\r\n",
-                    a->id, a->holder, a->balance);
-            }
-        }
-        /* Show total */
-        double total = 0;
-        for (int i = 0; i < acc_count; i++)
-            if (accounts[i].active)
-                total += accounts[i].balance;
-        len += snprintf(buf + len, bsz - len,
-            " --- %-20s  %12s\r\n",
-            "--------------------", "------------");
-        len += snprintf(buf + len, bsz - len,
-            "      %-20s  $%10.2f\r\n", "TOTAL", total);
-        len += snprintf(buf + len, bsz - len,
-            "\r\n Transactions: %d", tx_count);
+/* ============================================================
+ *  Apply Config
+ * ============================================================ */
+static void apply_config(void)
+{
+    int sched_idx = (int)SendMessageA(hComboSched, CB_GETCURSEL, 0, 0);
+    int mem_idx   = (int)SendMessageA(hComboMem,   CB_GETCURSEL, 0, 0);
+    int cache_idx = (int)SendMessageA(hComboCache, CB_GETCURSEL, 0, 0);
+    int disk_idx  = (int)SendMessageA(hComboDisk,  CB_GETCURSEL, 0, 0);
+
+    char qbuf[32];
+    GetWindowTextA(hEditQuantum, qbuf, sizeof(qbuf));
+    int quantum = atoi(qbuf);
+    if (quantum < 1) quantum = 5;
+
+    if (sched_idx >= 0)
+        sys_set_scheduler((SchedulerAlgo)sched_idx, quantum);
+    if (mem_idx >= 0)
+        sys_set_mem_strategy((MemStrategy)mem_idx);
+    if (cache_idx >= 0)
+        sys_set_cache_algo((CacheAlgo)cache_idx);
+    if (disk_idx >= 0)
+        sys_set_disk_algo((DiskAlgo)disk_idx);
+
+    trace_log("CONFIG: Scheduler=%d, Quantum=%d, Mem=%d, Cache=%d, Disk=%d",
+              sched_idx, quantum, mem_idx, cache_idx, disk_idx);
+
+    MessageBoxA(g_hWnd, "Configuration applied successfully.",
+                "OS Config", MB_ICONINFORMATION);
+}
+
+/* ============================================================
+ *  Find Account Helper
+ * ============================================================ */
+static GuiAccount *find_account(int id)
+{
+    for (int i = 0; i < acc_count; i++) {
+        if (accounts[i].id == id && accounts[i].active)
+            return &accounts[i];
+    }
+    return NULL;
+}
+
+/* ============================================================
+ *  Banking: Create Account
+ * ============================================================ */
+static void do_create_account(const char *name, double initial)
+{
+    if (acc_count >= 20) {
+        MessageBoxA(g_hWnd, "Maximum of 20 accounts reached.",
+                    "Error", MB_ICONERROR);
+        return;
+    }
+    if (strlen(name) == 0) {
+        MessageBoxA(g_hWnd, "Please enter an account holder name.",
+                    "Error", MB_ICONERROR);
+        return;
+    }
+    if (initial < 0.0) {
+        MessageBoxA(g_hWnd, "Initial balance cannot be negative.",
+                    "Error", MB_ICONERROR);
+        return;
     }
 
-    SetWindowTextA(hAccounts, buf);
+    int id = acc_count + 1;
+
+    /* Create a process for this operation */
+    int pid = sys_fork("create_account", 3, 10, NULL, NULL);
+    trace_log("SYSCALL: sys_fork('create_account', pri=3)");
+    trace_log("Process P%d created (NEW)", pid);
+
+    sys_set_state(pid, PROC_READY);
+    sys_set_state(pid, PROC_RUNNING);
+    trace_log("P%d: NEW -> READY -> RUNNING", pid);
+
+    /* Allocate memory */
+    int mem = sys_alloc(pid, 1);
+    trace_log("Memory: 1 KB allocated at addr %d (%s)",
+              mem,
+              g_kernel.mem_strategy == MEM_BEST_FIT  ? "Best Fit"  :
+              g_kernel.mem_strategy == MEM_FIRST_FIT  ? "First Fit" :
+              g_kernel.mem_strategy == MEM_WORST_FIT  ? "Worst Fit" :
+                                                        "Next Fit");
+
+    /* Create file in /accounts */
+    char fname[64];
+    snprintf(fname, sizeof(fname), "acc_%03d", id);
+    int fid = sys_create(fname, 0, accounts_dir);
+    trace_log("File '%s' created in /accounts (node %d)", fname, fid);
+
+    /* Write account data */
+    int fd = sys_open(fid, 2, pid);
+    trace_log("sys_open(fid=%d, mode=WRITE, pid=%d) -> fd=%d", fid, pid, fd);
+
+    char data[256];
+    int dlen = snprintf(data, sizeof(data), "%d|%s|%.2f", id, name, initial);
+    sys_write(fd, data, dlen);
+    trace_log("sys_write: %d bytes to fd=%d", dlen, fd);
+
+    sys_close(fd);
+    trace_log("sys_close(fd=%d)", fd);
+
+    /* Cache the new account page */
+    int cache_hit = sys_cache_access(id);
+    trace_log("Cache page %d: %s", id, cache_hit ? "HIT" : "MISS (loaded)");
+
+    /* Disk I/O simulation */
+    int track = (id * 7) % OS_DISK_SIZE;
+    sys_io_request(track);
+    sys_io_process();
+    trace_log("Disk I/O: wrote to track %d (%s)",
+              track,
+              g_kernel.io.algo == DISK_SCAN  ? "SCAN"  :
+              g_kernel.io.algo == DISK_FCFS  ? "FCFS"  :
+              g_kernel.io.algo == DISK_SSTF  ? "SSTF"  :
+                                                "C-SCAN");
+
+    /* Set max need for Banker's algorithm */
+    sys_set_max_need(pid, id, 1);
+    trace_log("Banker's: max_need[P%d][res_%d] = 1", pid, id);
+
+    /* Store in local state */
+    accounts[acc_count].id       = id;
+    strncpy(accounts[acc_count].holder, name, 63);
+    accounts[acc_count].holder[63] = '\0';
+    accounts[acc_count].balance  = initial;
+    accounts[acc_count].active   = 1;
+    accounts[acc_count].file_id  = fid;
+    acc_count++;
+
+    /* Cleanup process */
+    sys_free_all(pid);
+    trace_log("Memory freed for P%d", pid);
+
+    sys_set_state(pid, PROC_TERMINATED);
+    trace_log("P%d TERMINATED. Account #%d created for '%s' ($%.2f)",
+              pid, id, name, initial);
+    trace_log("---");
+
+    refresh_accounts();
+    update_trace_display();
+
+    char msg[256];
+    snprintf(msg, sizeof(msg),
+             "Account #%d created for %s\nBalance: $%.2f", id, name, initial);
+    MessageBoxA(g_hWnd, msg, "Account Created", MB_ICONINFORMATION);
 }
 
 /* ============================================================
- *  Create all child controls in WM_CREATE
+ *  Banking: Deposit
  * ============================================================ */
-static void create_controls(HWND hwnd) {
-    HINSTANCE hInst = (HINSTANCE)GetWindowLongPtrA(hwnd, GWLP_HINSTANCE);
+static void do_deposit(int acc_id, double amount)
+{
+    GuiAccount *acc = find_account(acc_id);
+    if (!acc) {
+        MessageBoxA(g_hWnd, "Account not found or inactive.",
+                    "Error", MB_ICONERROR);
+        return;
+    }
+    if (amount <= 0.0) {
+        MessageBoxA(g_hWnd, "Deposit amount must be positive.",
+                    "Error", MB_ICONERROR);
+        return;
+    }
 
-    /* Create fonts */
-    hFontUI = CreateFontA(
-        -14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, "Segoe UI");
+    int pid = sys_fork("deposit", 4, 8, NULL, NULL);
+    trace_log("SYSCALL: sys_fork('deposit', pri=4)");
+    trace_log("Process P%d created (NEW)", pid);
 
-    hFontMono = CreateFontA(
-        -13, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY, FIXED_PITCH | FF_MODERN, "Consolas");
+    sys_set_state(pid, PROC_READY);
+    sys_set_state(pid, PROC_RUNNING);
+    trace_log("P%d: NEW -> READY -> RUNNING", pid);
 
-    RECT rc;
-    GetClientRect(hwnd, &rc);
-    int cw = rc.right;
-    int ch = rc.bottom;
+    int mem = sys_alloc(pid, 1);
+    trace_log("Memory: 1 KB at addr %d", mem);
 
-    int left_w  = (cw * LEFT_PCT) / 100;
-    int right_w = cw - left_w;
-    int top_h   = ch - BOTTOM_H;
+    /* Lock account resource (Banker's) */
+    sys_set_max_need(pid, acc_id, 1);
+    int r = sys_lock(pid, acc_id, 1);
+    trace_log("sys_lock(P%d, res=%d): %s",
+              pid, acc_id, r == 0 ? "GRANTED (Banker's: SAFE)" : "DENIED");
+    if (r < 0) {
+        sys_free_all(pid);
+        sys_set_state(pid, PROC_TERMINATED);
+        trace_log("P%d TERMINATED (lock denied).", pid);
+        trace_log("---");
+        update_trace_display();
+        MessageBoxA(g_hWnd, "Could not acquire lock on account.",
+                    "Error", MB_ICONERROR);
+        return;
+    }
 
-    /* ========================================================
-     *  LEFT PANEL -- Banking Operations
-     * ======================================================== */
-    int lx = MARGIN;
-    int ly = MARGIN;
-    int lw = left_w - 2 * MARGIN;
+    /* Cache access */
+    int cache_hit = sys_cache_access(acc_id);
+    trace_log("Cache page %d: %s", acc_id, cache_hit ? "HIT" : "MISS");
 
-    /* -- Group: Banking Operations -- */
-    hGrpBank = CreateWindowExA(0, "BUTTON", "Banking Operations",
-        WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
-        lx, ly, lw, 260,
-        hwnd, (HMENU)ID_GRP_BANK, hInst, NULL);
-    SendMessageA(hGrpBank, WM_SETFONT, (WPARAM)hFontUI, TRUE);
+    /* Update file */
+    int fd = sys_open(acc->file_id, 2, pid);
+    char data[256];
+    acc->balance += amount;
+    int dlen = snprintf(data, sizeof(data), "%d|%s|%.2f",
+                        acc->id, acc->holder, acc->balance);
+    sys_write(fd, data, dlen);
+    sys_close(fd);
+    trace_log("File write: %d bytes to fd=%d (balance updated)", dlen, fd);
 
-    int fx = lx + 12;   /* fields x */
-    int fy = ly + 22;   /* fields y */
-    int flbl_w = 95;    /* label width */
-    int fedt_w = 200;   /* edit width */
+    /* Disk I/O */
+    int track = (acc_id * 7 + 3) % OS_DISK_SIZE;
+    sys_io_request(track);
+    sys_io_process();
+    trace_log("Disk I/O: track %d", track);
 
-    /* Account Name */
-    hLblName = CreateWindowExA(0, "STATIC", "Account Name:",
-        WS_CHILD | WS_VISIBLE | SS_RIGHT,
-        fx, fy + 3, flbl_w, LABEL_H,
-        hwnd, NULL, hInst, NULL);
-    SendMessageA(hLblName, WM_SETFONT, (WPARAM)hFontUI, TRUE);
+    /* Release lock */
+    sys_unlock(pid, acc_id, 1);
+    trace_log("sys_unlock(P%d, res=%d): released", pid, acc_id);
 
-    hEdtName = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
-        fx + flbl_w + 6, fy, fedt_w, EDIT_H,
-        hwnd, (HMENU)ID_EDT_NAME, hInst, NULL);
-    SendMessageA(hEdtName, WM_SETFONT, (WPARAM)hFontUI, TRUE);
-    fy += EDIT_H + 6;
+    /* Cleanup */
+    sys_free_all(pid);
+    sys_set_state(pid, PROC_TERMINATED);
+    trace_log("P%d TERMINATED. Deposited $%.2f to Account #%d (new bal: $%.2f)",
+              pid, amount, acc_id, acc->balance);
+    trace_log("---");
 
-    /* Amount */
-    hLblAmount = CreateWindowExA(0, "STATIC", "Amount:",
-        WS_CHILD | WS_VISIBLE | SS_RIGHT,
-        fx, fy + 3, flbl_w, LABEL_H,
-        hwnd, NULL, hInst, NULL);
-    SendMessageA(hLblAmount, WM_SETFONT, (WPARAM)hFontUI, TRUE);
+    refresh_accounts();
+    update_trace_display();
 
-    hEdtAmount = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
-        fx + flbl_w + 6, fy, fedt_w, EDIT_H,
-        hwnd, (HMENU)ID_EDT_AMOUNT, hInst, NULL);
-    SendMessageA(hEdtAmount, WM_SETFONT, (WPARAM)hFontUI, TRUE);
-    fy += EDIT_H + 6;
-
-    /* Account ID */
-    hLblAccId = CreateWindowExA(0, "STATIC", "Account ID:",
-        WS_CHILD | WS_VISIBLE | SS_RIGHT,
-        fx, fy + 3, flbl_w, LABEL_H,
-        hwnd, NULL, hInst, NULL);
-    SendMessageA(hLblAccId, WM_SETFONT, (WPARAM)hFontUI, TRUE);
-
-    hEdtAccId = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
-        fx + flbl_w + 6, fy, fedt_w, EDIT_H,
-        hwnd, (HMENU)ID_EDT_ACCID, hInst, NULL);
-    SendMessageA(hEdtAccId, WM_SETFONT, (WPARAM)hFontUI, TRUE);
-    fy += EDIT_H + 6;
-
-    /* Target Account */
-    hLblTarget = CreateWindowExA(0, "STATIC", "Target Acc:",
-        WS_CHILD | WS_VISIBLE | SS_RIGHT,
-        fx, fy + 3, flbl_w, LABEL_H,
-        hwnd, NULL, hInst, NULL);
-    SendMessageA(hLblTarget, WM_SETFONT, (WPARAM)hFontUI, TRUE);
-
-    hEdtTarget = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
-        fx + flbl_w + 6, fy, fedt_w, EDIT_H,
-        hwnd, (HMENU)ID_EDT_TARGET, hInst, NULL);
-    SendMessageA(hEdtTarget, WM_SETFONT, (WPARAM)hFontUI, TRUE);
-    fy += EDIT_H + 12;
-
-    /* Buttons row 1 */
-    int bx = fx;
-    int btn_w = 130;
-    int btn_gap = 8;
-
-    hBtnCreate = CreateWindowExA(0, "BUTTON", "Create Account",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
-        bx, fy, btn_w + 20, BTN_H,
-        hwnd, (HMENU)ID_BTN_CREATE, hInst, NULL);
-    SendMessageA(hBtnCreate, WM_SETFONT, (WPARAM)hFontUI, TRUE);
-    fy += BTN_H + 6;
-
-    /* Buttons row 2 */
-    hBtnDeposit = CreateWindowExA(0, "BUTTON", "Deposit",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
-        bx, fy, btn_w, BTN_H,
-        hwnd, (HMENU)ID_BTN_DEPOSIT, hInst, NULL);
-    SendMessageA(hBtnDeposit, WM_SETFONT, (WPARAM)hFontUI, TRUE);
-
-    hBtnWithdraw = CreateWindowExA(0, "BUTTON", "Withdraw",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
-        bx + btn_w + btn_gap, fy, btn_w, BTN_H,
-        hwnd, (HMENU)ID_BTN_WITHDRAW, hInst, NULL);
-    SendMessageA(hBtnWithdraw, WM_SETFONT, (WPARAM)hFontUI, TRUE);
-    fy += BTN_H + 6;
-
-    /* Buttons row 3 */
-    hBtnTransfer = CreateWindowExA(0, "BUTTON", "Transfer",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
-        bx, fy, btn_w, BTN_H,
-        hwnd, (HMENU)ID_BTN_TRANSFER, hInst, NULL);
-    SendMessageA(hBtnTransfer, WM_SETFONT, (WPARAM)hFontUI, TRUE);
-
-    hBtnBalance = CreateWindowExA(0, "BUTTON", "Check Balance",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
-        bx + btn_w + btn_gap, fy, btn_w, BTN_H,
-        hwnd, (HMENU)ID_BTN_BALANCE, hInst, NULL);
-    SendMessageA(hBtnBalance, WM_SETFONT, (WPARAM)hFontUI, TRUE);
-
-    /* ========================================================
-     *  LEFT PANEL -- OS Configuration
-     * ======================================================== */
-    int cy_cfg = ly + 268;
-    hGrpConfig = CreateWindowExA(0, "BUTTON", "OS Configuration",
-        WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
-        lx, cy_cfg, lw, 160,
-        hwnd, (HMENU)ID_GRP_CONFIG, hInst, NULL);
-    SendMessageA(hGrpConfig, WM_SETFONT, (WPARAM)hFontUI, TRUE);
-
-    int cfx = lx + 12;
-    int cfy = cy_cfg + 22;
-    int clbl_w = 80;
-    int ccmb_w = 160;
-
-    /* Scheduler combo */
-    hLblSched = CreateWindowExA(0, "STATIC", "Scheduler:",
-        WS_CHILD | WS_VISIBLE | SS_RIGHT,
-        cfx, cfy + 3, clbl_w, LABEL_H,
-        hwnd, NULL, hInst, NULL);
-    SendMessageA(hLblSched, WM_SETFONT, (WPARAM)hFontUI, TRUE);
-
-    hCmbSched = CreateWindowExA(0, "COMBOBOX", "",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
-        cfx + clbl_w + 6, cfy, ccmb_w, COMBO_H * 6,
-        hwnd, (HMENU)ID_CMB_SCHED, hInst, NULL);
-    SendMessageA(hCmbSched, WM_SETFONT, (WPARAM)hFontUI, TRUE);
-    SendMessageA(hCmbSched, CB_ADDSTRING, 0, (LPARAM)"FCFS");
-    SendMessageA(hCmbSched, CB_ADDSTRING, 0, (LPARAM)"SJF");
-    SendMessageA(hCmbSched, CB_ADDSTRING, 0, (LPARAM)"Priority");
-    SendMessageA(hCmbSched, CB_ADDSTRING, 0, (LPARAM)"Round Robin");
-    SendMessageA(hCmbSched, CB_SETCURSEL, 0, 0);
-    cfy += COMBO_H + 4;
-
-    /* Memory combo */
-    hLblMem = CreateWindowExA(0, "STATIC", "Memory:",
-        WS_CHILD | WS_VISIBLE | SS_RIGHT,
-        cfx, cfy + 3, clbl_w, LABEL_H,
-        hwnd, NULL, hInst, NULL);
-    SendMessageA(hLblMem, WM_SETFONT, (WPARAM)hFontUI, TRUE);
-
-    hCmbMem = CreateWindowExA(0, "COMBOBOX", "",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
-        cfx + clbl_w + 6, cfy, ccmb_w, COMBO_H * 6,
-        hwnd, (HMENU)ID_CMB_MEM, hInst, NULL);
-    SendMessageA(hCmbMem, WM_SETFONT, (WPARAM)hFontUI, TRUE);
-    SendMessageA(hCmbMem, CB_ADDSTRING, 0, (LPARAM)"First Fit");
-    SendMessageA(hCmbMem, CB_ADDSTRING, 0, (LPARAM)"Best Fit");
-    SendMessageA(hCmbMem, CB_ADDSTRING, 0, (LPARAM)"Worst Fit");
-    SendMessageA(hCmbMem, CB_ADDSTRING, 0, (LPARAM)"Next Fit");
-    SendMessageA(hCmbMem, CB_SETCURSEL, 0, 0);
-    cfy += COMBO_H + 4;
-
-    /* Cache combo */
-    hLblCache = CreateWindowExA(0, "STATIC", "Cache:",
-        WS_CHILD | WS_VISIBLE | SS_RIGHT,
-        cfx, cfy + 3, clbl_w, LABEL_H,
-        hwnd, NULL, hInst, NULL);
-    SendMessageA(hLblCache, WM_SETFONT, (WPARAM)hFontUI, TRUE);
-
-    hCmbCache = CreateWindowExA(0, "COMBOBOX", "",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
-        cfx + clbl_w + 6, cfy, ccmb_w, COMBO_H * 6,
-        hwnd, (HMENU)ID_CMB_CACHE, hInst, NULL);
-    SendMessageA(hCmbCache, WM_SETFONT, (WPARAM)hFontUI, TRUE);
-    SendMessageA(hCmbCache, CB_ADDSTRING, 0, (LPARAM)"LRU");
-    SendMessageA(hCmbCache, CB_ADDSTRING, 0, (LPARAM)"FIFO");
-    SendMessageA(hCmbCache, CB_ADDSTRING, 0, (LPARAM)"Clock");
-    SendMessageA(hCmbCache, CB_SETCURSEL, 0, 0);
-    cfy += COMBO_H + 4;
-
-    /* Disk combo */
-    hLblDisk = CreateWindowExA(0, "STATIC", "Disk:",
-        WS_CHILD | WS_VISIBLE | SS_RIGHT,
-        cfx, cfy + 3, clbl_w, LABEL_H,
-        hwnd, NULL, hInst, NULL);
-    SendMessageA(hLblDisk, WM_SETFONT, (WPARAM)hFontUI, TRUE);
-
-    hCmbDisk = CreateWindowExA(0, "COMBOBOX", "",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
-        cfx + clbl_w + 6, cfy, ccmb_w, COMBO_H * 6,
-        hwnd, (HMENU)ID_CMB_DISK, hInst, NULL);
-    SendMessageA(hCmbDisk, WM_SETFONT, (WPARAM)hFontUI, TRUE);
-    SendMessageA(hCmbDisk, CB_ADDSTRING, 0, (LPARAM)"FCFS");
-    SendMessageA(hCmbDisk, CB_ADDSTRING, 0, (LPARAM)"SSTF");
-    SendMessageA(hCmbDisk, CB_ADDSTRING, 0, (LPARAM)"SCAN");
-    SendMessageA(hCmbDisk, CB_ADDSTRING, 0, (LPARAM)"C-SCAN");
-    SendMessageA(hCmbDisk, CB_SETCURSEL, 0, 0);
-
-    /* Apply button -- to the right of the combos */
-    hBtnApply = CreateWindowExA(0, "BUTTON", "Apply Config",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
-        cfx + clbl_w + ccmb_w + 20, cy_cfg + 64, 120, BTN_H,
-        hwnd, (HMENU)ID_BTN_APPLY, hInst, NULL);
-    SendMessageA(hBtnApply, WM_SETFONT, (WPARAM)hFontUI, TRUE);
-
-    /* ========================================================
-     *  LEFT PANEL -- Accounts Table
-     * ======================================================== */
-    int cy_acc = cy_cfg + 168;
-    int acc_h  = top_h - cy_acc - MARGIN;
-    if (acc_h < 60) acc_h = 60;
-
-    hGrpAccts = CreateWindowExA(0, "BUTTON", "Accounts",
-        WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
-        lx, cy_acc, lw, acc_h,
-        hwnd, (HMENU)ID_GRP_ACCTS, hInst, NULL);
-    SendMessageA(hGrpAccts, WM_SETFONT, (WPARAM)hFontUI, TRUE);
-
-    hAccounts = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "(no accounts yet)",
-        WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_READONLY |
-        ES_AUTOVSCROLL | WS_VSCROLL,
-        lx + 6, cy_acc + 18, lw - 12, acc_h - 24,
-        hwnd, (HMENU)ID_ACCOUNTS, hInst, NULL);
-    SendMessageA(hAccounts, WM_SETFONT, (WPARAM)hFontMono, TRUE);
-
-    /* ========================================================
-     *  RIGHT PANEL -- OS Kernel Dashboard
-     * ======================================================== */
-    int rx = left_w + MARGIN;
-    int ry = MARGIN;
-    int rw = right_w - 2 * MARGIN;
-    int rh = top_h - 2 * MARGIN;
-
-    hGrpDash = CreateWindowExA(0, "BUTTON", "OS Kernel Dashboard",
-        WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
-        rx, ry, rw, rh,
-        hwnd, (HMENU)ID_GRP_DASH, hInst, NULL);
-    SendMessageA(hGrpDash, WM_SETFONT, (WPARAM)hFontUI, TRUE);
-
-    hDashboard = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "",
-        WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_READONLY |
-        ES_AUTOVSCROLL | WS_VSCROLL,
-        rx + 6, ry + 18, rw - 12, rh - 24,
-        hwnd, (HMENU)ID_DASHBOARD, hInst, NULL);
-    SendMessageA(hDashboard, WM_SETFONT, (WPARAM)hFontMono, TRUE);
-
-    /* ========================================================
-     *  BOTTOM PANEL -- OS Trace Log
-     * ======================================================== */
-    int tx_y = top_h;
-    int tx_w = cw - 2 * MARGIN;
-    int tx_h = BOTTOM_H - MARGIN;
-
-    hGrpTrace = CreateWindowExA(0, "BUTTON", "OS Trace Log",
-        WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
-        MARGIN, tx_y, tx_w, tx_h,
-        hwnd, (HMENU)ID_GRP_TRACE, hInst, NULL);
-    SendMessageA(hGrpTrace, WM_SETFONT, (WPARAM)hFontUI, TRUE);
-
-    hTrace = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "",
-        WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_READONLY |
-        ES_AUTOVSCROLL | WS_VSCROLL,
-        MARGIN + 6, tx_y + 18, tx_w - 12, tx_h - 24,
-        hwnd, (HMENU)ID_TRACE, hInst, NULL);
-    SendMessageA(hTrace, WM_SETFONT, (WPARAM)hFontMono, TRUE);
+    char msg[256];
+    snprintf(msg, sizeof(msg),
+             "Deposited $%.2f to Account #%d\nNew Balance: $%.2f",
+             amount, acc_id, acc->balance);
+    MessageBoxA(g_hWnd, msg, "Deposit Successful", MB_ICONINFORMATION);
 }
 
 /* ============================================================
- *  Handle WM_SIZE -- resize panels proportionally
+ *  Banking: Withdraw
  * ============================================================ */
-static void handle_resize(HWND hwnd) {
-    RECT rc;
-    GetClientRect(hwnd, &rc);
-    int cw = rc.right;
-    int ch = rc.bottom;
+static void do_withdraw(int acc_id, double amount)
+{
+    GuiAccount *acc = find_account(acc_id);
+    if (!acc) {
+        MessageBoxA(g_hWnd, "Account not found or inactive.",
+                    "Error", MB_ICONERROR);
+        return;
+    }
+    if (amount <= 0.0) {
+        MessageBoxA(g_hWnd, "Withdrawal amount must be positive.",
+                    "Error", MB_ICONERROR);
+        return;
+    }
+    if (acc->balance < amount) {
+        MessageBoxA(g_hWnd, "Insufficient funds.",
+                    "Error", MB_ICONERROR);
+        return;
+    }
 
-    int left_w  = (cw * LEFT_PCT) / 100;
-    int right_w = cw - left_w;
-    int top_h   = ch - BOTTOM_H;
+    int pid = sys_fork("withdraw", 4, 8, NULL, NULL);
+    trace_log("SYSCALL: sys_fork('withdraw', pri=4)");
+    trace_log("Process P%d created (NEW)", pid);
 
-    /* ---- Left panel groups ---- */
-    int lx = MARGIN;
-    int lw = left_w - 2 * MARGIN;
+    sys_set_state(pid, PROC_READY);
+    sys_set_state(pid, PROC_RUNNING);
+    trace_log("P%d: NEW -> READY -> RUNNING", pid);
 
-    /* Banking Operations group stays fixed height */
-    MoveWindow(hGrpBank, lx, MARGIN, lw, 260, TRUE);
+    int mem = sys_alloc(pid, 1);
+    trace_log("Memory: 1 KB at addr %d", mem);
 
-    /* OS Configuration group stays fixed height */
-    int cy_cfg = MARGIN + 268;
-    MoveWindow(hGrpConfig, lx, cy_cfg, lw, 160, TRUE);
+    /* Lock account */
+    sys_set_max_need(pid, acc_id, 1);
+    int r = sys_lock(pid, acc_id, 1);
+    trace_log("sys_lock(P%d, res=%d): %s",
+              pid, acc_id, r == 0 ? "GRANTED (Banker's: SAFE)" : "DENIED");
+    if (r < 0) {
+        sys_free_all(pid);
+        sys_set_state(pid, PROC_TERMINATED);
+        trace_log("P%d TERMINATED (lock denied).", pid);
+        trace_log("---");
+        update_trace_display();
+        MessageBoxA(g_hWnd, "Could not acquire lock on account.",
+                    "Error", MB_ICONERROR);
+        return;
+    }
 
-    /* Accounts group fills remaining vertical space in the left panel */
-    int cy_acc = cy_cfg + 168;
-    int acc_h  = top_h - cy_acc - MARGIN;
-    if (acc_h < 60) acc_h = 60;
+    /* Cache */
+    int cache_hit = sys_cache_access(acc_id);
+    trace_log("Cache page %d: %s", acc_id, cache_hit ? "HIT" : "MISS");
 
-    MoveWindow(hGrpAccts, lx, cy_acc, lw, acc_h, TRUE);
-    MoveWindow(hAccounts, lx + 6, cy_acc + 18, lw - 12, acc_h - 24, TRUE);
+    /* Update file */
+    int fd = sys_open(acc->file_id, 2, pid);
+    char data[256];
+    acc->balance -= amount;
+    int dlen = snprintf(data, sizeof(data), "%d|%s|%.2f",
+                        acc->id, acc->holder, acc->balance);
+    sys_write(fd, data, dlen);
+    sys_close(fd);
+    trace_log("File write: %d bytes (balance updated)", dlen);
 
-    /* ---- Right panel ---- */
-    int rx = left_w + MARGIN;
-    int rw = right_w - 2 * MARGIN;
-    int rh = top_h - 2 * MARGIN;
+    /* Disk I/O */
+    int track = (acc_id * 7 + 5) % OS_DISK_SIZE;
+    sys_io_request(track);
+    sys_io_process();
+    trace_log("Disk I/O: track %d", track);
 
-    MoveWindow(hGrpDash, rx, MARGIN, rw, rh, TRUE);
-    MoveWindow(hDashboard, rx + 6, MARGIN + 18, rw - 12, rh - 24, TRUE);
+    /* Release */
+    sys_unlock(pid, acc_id, 1);
+    trace_log("sys_unlock(P%d, res=%d): released", pid, acc_id);
 
-    /* ---- Bottom panel ---- */
-    int tx_y = top_h;
-    int tx_w = cw - 2 * MARGIN;
-    int tx_h = BOTTOM_H - MARGIN;
+    sys_free_all(pid);
+    sys_set_state(pid, PROC_TERMINATED);
+    trace_log("P%d TERMINATED. Withdrew $%.2f from Account #%d (new bal: $%.2f)",
+              pid, amount, acc_id, acc->balance);
+    trace_log("---");
 
-    MoveWindow(hGrpTrace, MARGIN, tx_y, tx_w, tx_h, TRUE);
-    MoveWindow(hTrace, MARGIN + 6, tx_y + 18, tx_w - 12, tx_h - 24, TRUE);
+    refresh_accounts();
+    update_trace_display();
 
-    InvalidateRect(hwnd, NULL, TRUE);
+    char msg[256];
+    snprintf(msg, sizeof(msg),
+             "Withdrew $%.2f from Account #%d\nNew Balance: $%.2f",
+             amount, acc_id, acc->balance);
+    MessageBoxA(g_hWnd, msg, "Withdrawal Successful", MB_ICONINFORMATION);
 }
 
 /* ============================================================
- *  Handle WM_COMMAND -- button clicks
+ *  Banking: Transfer (with resource ordering for deadlock prevention)
  * ============================================================ */
-static void handle_command(HWND hwnd, WPARAM wParam) {
-    int id = LOWORD(wParam);
-    int code = HIWORD(wParam);
+static void do_transfer(int from_id, int to_id, double amount)
+{
+    if (from_id == to_id) {
+        MessageBoxA(g_hWnd, "Cannot transfer to the same account.",
+                    "Error", MB_ICONERROR);
+        return;
+    }
+    GuiAccount *from_acc = find_account(from_id);
+    GuiAccount *to_acc   = find_account(to_id);
+    if (!from_acc || !to_acc) {
+        MessageBoxA(g_hWnd, "One or both accounts not found.",
+                    "Error", MB_ICONERROR);
+        return;
+    }
+    if (amount <= 0.0) {
+        MessageBoxA(g_hWnd, "Transfer amount must be positive.",
+                    "Error", MB_ICONERROR);
+        return;
+    }
+    if (from_acc->balance < amount) {
+        MessageBoxA(g_hWnd, "Insufficient funds in source account.",
+                    "Error", MB_ICONERROR);
+        return;
+    }
 
-    (void)hwnd;
-    (void)code;
+    int pid = sys_fork("transfer", 2, 15, NULL, NULL);
+    trace_log("SYSCALL: sys_fork('transfer', pri=2)");
+    trace_log("Process P%d created (NEW)", pid);
+
+    sys_set_state(pid, PROC_READY);
+    sys_set_state(pid, PROC_RUNNING);
+    trace_log("P%d: NEW -> READY -> RUNNING", pid);
+
+    int mem = sys_alloc(pid, 2);
+    trace_log("Memory: 2 KB at addr %d", mem);
+
+    /* Resource ordering: lock lower-numbered account first */
+    int first  = (from_id < to_id) ? from_id : to_id;
+    int second = (from_id < to_id) ? to_id   : from_id;
+
+    trace_log("Resource ordering: locking #%d then #%d", first, second);
+
+    sys_set_max_need(pid, first, 1);
+    sys_set_max_need(pid, second, 1);
+
+    int r1 = sys_lock(pid, first, 1);
+    trace_log("sys_lock(P%d, res=%d): %s",
+              pid, first,
+              r1 == 0 ? "GRANTED (Banker's: SAFE)" : "DENIED");
+    if (r1 < 0) {
+        sys_free_all(pid);
+        sys_set_state(pid, PROC_TERMINATED);
+        trace_log("P%d TERMINATED (lock denied on first resource).", pid);
+        trace_log("---");
+        update_trace_display();
+        MessageBoxA(g_hWnd, "Could not acquire lock. Transfer aborted.",
+                    "Error", MB_ICONERROR);
+        return;
+    }
+
+    int r2 = sys_lock(pid, second, 1);
+    trace_log("sys_lock(P%d, res=%d): %s",
+              pid, second,
+              r2 == 0 ? "GRANTED" : "DENIED - potential deadlock!");
+    if (r2 < 0) {
+        sys_unlock(pid, first, 1);
+        trace_log("sys_unlock(P%d, res=%d): released (rollback)", pid, first);
+        sys_free_all(pid);
+        sys_set_state(pid, PROC_TERMINATED);
+        trace_log("P%d TERMINATED (lock denied on second resource).", pid);
+        trace_log("---");
+        update_trace_display();
+        MessageBoxA(g_hWnd,
+                    "Could not lock both accounts. Transfer aborted.",
+                    "Error", MB_ICONERROR);
+        return;
+    }
+
+    /* Cache both accounts */
+    int c1 = sys_cache_access(from_id);
+    trace_log("Cache page %d: %s", from_id, c1 ? "HIT" : "MISS");
+    int c2 = sys_cache_access(to_id);
+    trace_log("Cache page %d: %s", to_id, c2 ? "HIT" : "MISS");
+
+    /* Perform transfer */
+    from_acc->balance -= amount;
+    to_acc->balance   += amount;
+
+    /* Update source file */
+    int fd1 = sys_open(from_acc->file_id, 2, pid);
+    char data1[256];
+    int dlen1 = snprintf(data1, sizeof(data1), "%d|%s|%.2f",
+                         from_acc->id, from_acc->holder, from_acc->balance);
+    sys_write(fd1, data1, dlen1);
+    sys_close(fd1);
+    trace_log("File write: Account #%d updated (%d bytes)", from_id, dlen1);
+
+    /* Update destination file */
+    int fd2 = sys_open(to_acc->file_id, 2, pid);
+    char data2[256];
+    int dlen2 = snprintf(data2, sizeof(data2), "%d|%s|%.2f",
+                         to_acc->id, to_acc->holder, to_acc->balance);
+    sys_write(fd2, data2, dlen2);
+    sys_close(fd2);
+    trace_log("File write: Account #%d updated (%d bytes)", to_id, dlen2);
+
+    /* Disk I/O */
+    int track1 = (from_id * 7 + 11) % OS_DISK_SIZE;
+    int track2 = (to_id * 7 + 11) % OS_DISK_SIZE;
+    sys_io_request(track1);
+    sys_io_request(track2);
+    sys_io_process();
+    sys_io_process();
+    trace_log("Disk I/O: tracks %d, %d", track1, track2);
+
+    /* Release both locks (reverse order) */
+    sys_unlock(pid, second, 1);
+    trace_log("sys_unlock(P%d, res=%d): released", pid, second);
+    sys_unlock(pid, first, 1);
+    trace_log("sys_unlock(P%d, res=%d): released", pid, first);
+
+    /* Cleanup */
+    sys_free_all(pid);
+    sys_set_state(pid, PROC_TERMINATED);
+    trace_log("P%d TERMINATED. Transferred $%.2f: #%d -> #%d",
+              pid, amount, from_id, to_id);
+    trace_log("  #%d new bal: $%.2f   #%d new bal: $%.2f",
+              from_id, from_acc->balance, to_id, to_acc->balance);
+    trace_log("---");
+
+    refresh_accounts();
+    update_trace_display();
+
+    char msg[256];
+    snprintf(msg, sizeof(msg),
+             "Transferred $%.2f\n"
+             "From #%d (%s): $%.2f\n"
+             "To #%d (%s): $%.2f",
+             amount,
+             from_id, from_acc->holder, from_acc->balance,
+             to_id,   to_acc->holder,   to_acc->balance);
+    MessageBoxA(g_hWnd, msg, "Transfer Successful", MB_ICONINFORMATION);
+}
+
+/* ============================================================
+ *  Banking: Check Balance
+ * ============================================================ */
+static void do_check_balance(int acc_id)
+{
+    GuiAccount *acc = find_account(acc_id);
+    if (!acc) {
+        MessageBoxA(g_hWnd, "Account not found or inactive.",
+                    "Error", MB_ICONERROR);
+        return;
+    }
+
+    int pid = sys_fork("check_balance", 5, 4, NULL, NULL);
+    trace_log("SYSCALL: sys_fork('check_balance', pri=5)");
+    trace_log("Process P%d created (NEW)", pid);
+
+    sys_set_state(pid, PROC_READY);
+    sys_set_state(pid, PROC_RUNNING);
+    trace_log("P%d: NEW -> READY -> RUNNING", pid);
+
+    int mem = sys_alloc(pid, 1);
+    trace_log("Memory: 1 KB at addr %d", mem);
+
+    /* Cache access */
+    int cache_hit = sys_cache_access(acc_id);
+    trace_log("Cache page %d: %s", acc_id, cache_hit ? "HIT" : "MISS");
+
+    /* Read file */
+    int fd = sys_open(acc->file_id, 1, pid);
+    char rbuf[256];
+    int nread = sys_read(fd, rbuf, sizeof(rbuf) - 1);
+    if (nread > 0) rbuf[nread] = '\0';
+    else           rbuf[0] = '\0';
+    sys_close(fd);
+    trace_log("File read: %d bytes from fd=%d -> '%s'", nread, fd, rbuf);
+
+    /* Disk I/O */
+    int track = (acc_id * 7 + 1) % OS_DISK_SIZE;
+    sys_io_request(track);
+    sys_io_process();
+    trace_log("Disk I/O: read track %d", track);
+
+    /* Cleanup */
+    sys_free_all(pid);
+    sys_set_state(pid, PROC_TERMINATED);
+    trace_log("P%d TERMINATED. Balance query for Account #%d", pid, acc_id);
+    trace_log("---");
+
+    update_trace_display();
+
+    char msg[256];
+    snprintf(msg, sizeof(msg),
+             "Account #%d\nHolder: %s\nBalance: $%.2f",
+             acc->id, acc->holder, acc->balance);
+    MessageBoxA(g_hWnd, msg, "Account Balance", MB_ICONINFORMATION);
+}
+
+/* ============================================================
+ *  Command Handler
+ * ============================================================ */
+static void handle_command(HWND hwnd, int id)
+{
+    char buf_name[128], buf_amount[64], buf_accid[32];
+    char buf_from[32], buf_to[32], buf_tamt[64];
 
     switch (id) {
+    case IDC_BTN_CREATE:
+        GetWindowTextA(hEditName, buf_name, sizeof(buf_name));
+        GetWindowTextA(hEditAmount, buf_amount, sizeof(buf_amount));
+        {
+            double initial = atof(buf_amount);
+            do_create_account(buf_name, initial);
+        }
+        break;
 
-    case ID_BTN_CREATE: {
-        char name[OS_MAX_NAME];
-        get_edit_text(hEdtName, name, sizeof(name));
-        double amt = get_edit_double(hEdtAmount);
-        gui_create_account(name, amt);
-        /* Clear input fields */
-        SetWindowTextA(hEdtName, "");
-        SetWindowTextA(hEdtAmount, "");
+    case IDC_BTN_BALANCE:
+        GetWindowTextA(hEditAccId, buf_accid, sizeof(buf_accid));
+        {
+            int acc_id = atoi(buf_accid);
+            if (acc_id <= 0) {
+                MessageBoxA(hwnd, "Please enter a valid Account ID.",
+                            "Error", MB_ICONERROR);
+                return;
+            }
+            do_check_balance(acc_id);
+        }
+        break;
+
+    case IDC_BTN_DEPOSIT:
+        GetWindowTextA(hEditAccId, buf_accid, sizeof(buf_accid));
+        GetWindowTextA(hEditAmount, buf_amount, sizeof(buf_amount));
+        {
+            int acc_id = atoi(buf_accid);
+            double amount = atof(buf_amount);
+            if (acc_id <= 0) {
+                MessageBoxA(hwnd, "Please enter a valid Account ID.",
+                            "Error", MB_ICONERROR);
+                return;
+            }
+            do_deposit(acc_id, amount);
+        }
+        break;
+
+    case IDC_BTN_WITHDRAW:
+        GetWindowTextA(hEditAccId, buf_accid, sizeof(buf_accid));
+        GetWindowTextA(hEditAmount, buf_amount, sizeof(buf_amount));
+        {
+            int acc_id = atoi(buf_accid);
+            double amount = atof(buf_amount);
+            if (acc_id <= 0) {
+                MessageBoxA(hwnd, "Please enter a valid Account ID.",
+                            "Error", MB_ICONERROR);
+                return;
+            }
+            do_withdraw(acc_id, amount);
+        }
+        break;
+
+    case IDC_BTN_TRANSFER:
+        GetWindowTextA(hEditFromAcc, buf_from, sizeof(buf_from));
+        GetWindowTextA(hEditToAcc, buf_to, sizeof(buf_to));
+        GetWindowTextA(hEditTransAmt, buf_tamt, sizeof(buf_tamt));
+        {
+            int from_id = atoi(buf_from);
+            int to_id   = atoi(buf_to);
+            double amount = atof(buf_tamt);
+            if (from_id <= 0 || to_id <= 0) {
+                MessageBoxA(hwnd,
+                    "Please enter valid From and To account IDs.",
+                    "Error", MB_ICONERROR);
+                return;
+            }
+            do_transfer(from_id, to_id, amount);
+        }
+        break;
+
+    case IDC_BTN_REFRESH:
+        refresh_dashboard();
+        break;
+
+    case IDC_BTN_APPLY:
+        apply_config();
+        break;
+
+    case IDC_BTN_CLEAR_LOG:
+        trace_clear();
+        update_trace_display();
         break;
     }
-
-    case ID_BTN_DEPOSIT: {
-        int acc = get_edit_int(hEdtAccId);
-        double amt = get_edit_double(hEdtAmount);
-        gui_deposit(acc, amt);
-        SetWindowTextA(hEdtAmount, "");
-        break;
-    }
-
-    case ID_BTN_WITHDRAW: {
-        int acc = get_edit_int(hEdtAccId);
-        double amt = get_edit_double(hEdtAmount);
-        gui_withdraw(acc, amt);
-        SetWindowTextA(hEdtAmount, "");
-        break;
-    }
-
-    case ID_BTN_TRANSFER: {
-        int from = get_edit_int(hEdtAccId);
-        int to   = get_edit_int(hEdtTarget);
-        double amt = get_edit_double(hEdtAmount);
-        gui_transfer(from, to, amt);
-        SetWindowTextA(hEdtAmount, "");
-        break;
-    }
-
-    case ID_BTN_BALANCE: {
-        int acc = get_edit_int(hEdtAccId);
-        gui_check_balance(acc);
-        break;
-    }
-
-    case ID_BTN_APPLY:
-        gui_apply_config();
-        break;
-    }
-}
-
-/* ============================================================
- *  Custom paint -- draw a separator line between panels
- * ============================================================ */
-static void handle_paint(HWND hwnd) {
-    PAINTSTRUCT ps;
-    HDC hdc = BeginPaint(hwnd, &ps);
-
-    RECT rc;
-    GetClientRect(hwnd, &rc);
-    int left_w = (rc.right * LEFT_PCT) / 100;
-    int top_h  = rc.bottom - BOTTOM_H;
-
-    /* Vertical separator between left and right panels */
-    HPEN hPen = CreatePen(PS_SOLID, 1, RGB(160, 160, 160));
-    HPEN hOld = (HPEN)SelectObject(hdc, hPen);
-    MoveToEx(hdc, left_w, 0, NULL);
-    LineTo(hdc, left_w, top_h);
-    SelectObject(hdc, hOld);
-    DeleteObject(hPen);
-
-    /* Horizontal separator above the trace log */
-    hPen = CreatePen(PS_SOLID, 1, RGB(160, 160, 160));
-    hOld = (HPEN)SelectObject(hdc, hPen);
-    MoveToEx(hdc, 0, top_h, NULL);
-    LineTo(hdc, rc.right, top_h);
-    SelectObject(hdc, hOld);
-    DeleteObject(hPen);
-
-    EndPaint(hwnd, &ps);
-}
-
-/* ============================================================
- *  Set tab stops for the read-only edit controls
- * ============================================================ */
-static void set_edit_tabs(HWND hEdit) {
-    DWORD tabs[] = { 24, 48, 72, 96, 120 };
-    SendMessageA(hEdit, EM_SETTABSTOPS, 5, (LPARAM)tabs);
 }
 
 /* ============================================================
@@ -1501,74 +1502,77 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg,
     switch (msg) {
 
     case WM_CREATE:
-        create_controls(hwnd);
-        init_banking_fs();
-
-        /* Set tab stops on multiline edits */
-        set_edit_tabs(hDashboard);
-        set_edit_tabs(hAccounts);
-        set_edit_tabs(hTrace);
-
-        /* Show initial dashboard and boot trace */
-        refresh_dashboard();
-        refresh_accounts_list();
-        post_trace();
+        create_tabs(hwnd);
+        refresh_accounts();
+        trace_log("TaskForge v2 GUI started");
+        trace_log("Kernel initialized. Memory: %d KB, Cache: %d entries",
+                  OS_MEMORY_SIZE, OS_CACHE_SIZE);
+        trace_log("Dirs created: /accounts (node %d), /logs (node %d)",
+                  accounts_dir, logs_dir);
+        trace_log("---");
         return 0;
 
-    case WM_SIZE:
-        handle_resize(hwnd);
+    case WM_SIZE: {
+        int w = LOWORD(lParam);
+        int h = HIWORD(lParam);
+        resize_panels(w, h);
         return 0;
+    }
+
+    case WM_GETMINMAXINFO: {
+        MINMAXINFO *mmi = (MINMAXINFO *)lParam;
+        mmi->ptMinTrackSize.x = WND_MIN_W;
+        mmi->ptMinTrackSize.y = WND_MIN_H;
+        return 0;
+    }
 
     case WM_COMMAND:
-        handle_command(hwnd, wParam);
+        if (HIWORD(wParam) == BN_CLICKED) {
+            handle_command(hwnd, LOWORD(wParam));
+        }
         return 0;
 
-    case WM_PAINT:
-        handle_paint(hwnd);
+    case WM_NOTIFY: {
+        NMHDR *nm = (NMHDR *)lParam;
+        if (nm->idFrom == IDC_TABCTRL && nm->code == TCN_SELCHANGE) {
+            int sel = TabCtrl_GetCurSel(hTabCtrl);
+            switch_tab(sel);
+        }
         return 0;
+    }
 
     case WM_CTLCOLORSTATIC: {
-        /* Make dashboard / accounts / trace backgrounds white
-         * for better readability with Consolas font */
-        HWND hCtrl = (HWND)lParam;
-        if (hCtrl == hDashboard || hCtrl == hAccounts || hCtrl == hTrace) {
-            HDC hdc = (HDC)wParam;
+        HDC hdc = (HDC)wParam;
+        HWND hCtl = (HWND)lParam;
+        /* Dark background for dashboard and trace multiline edits */
+        if (hCtl == hDashText || hCtl == hTraceText) {
+            SetBkColor(hdc, CLR_DARK_BG);
+            SetTextColor(hdc, CLR_LIGHT_TEXT);
+            return (LRESULT)hBrushDark;
+        }
+        /* Green text for accounts list on default bg */
+        if (hCtl == hAccountsList) {
             SetBkColor(hdc, RGB(255, 255, 255));
-            SetTextColor(hdc, RGB(0, 0, 0));
+            SetTextColor(hdc, RGB(0, 80, 0));
             return (LRESULT)GetStockObject(WHITE_BRUSH);
         }
         break;
     }
 
+    /* Read-only edit controls send WM_CTLCOLORSTATIC,
+       but just in case, also handle WM_CTLCOLOREDIT */
     case WM_CTLCOLOREDIT: {
-        HWND hCtrl = (HWND)lParam;
-        if (hCtrl == hDashboard || hCtrl == hAccounts || hCtrl == hTrace) {
-            HDC hdc = (HDC)wParam;
-            SetBkColor(hdc, RGB(15, 15, 25));
-            SetTextColor(hdc, RGB(0, 220, 100));
-            static HBRUSH hDarkBrush = NULL;
-            if (!hDarkBrush)
-                hDarkBrush = CreateSolidBrush(RGB(15, 15, 25));
-            return (LRESULT)hDarkBrush;
+        HDC hdc = (HDC)wParam;
+        HWND hCtl = (HWND)lParam;
+        if (hCtl == hDashText || hCtl == hTraceText) {
+            SetBkColor(hdc, CLR_DARK_BG);
+            SetTextColor(hdc, CLR_LIGHT_TEXT);
+            return (LRESULT)hBrushDark;
         }
         break;
     }
 
-    case WM_GETMINMAXINFO: {
-        MINMAXINFO *mmi = (MINMAXINFO *)lParam;
-        mmi->ptMinTrackSize.x = 900;
-        mmi->ptMinTrackSize.y = 600;
-        return 0;
-    }
-
     case WM_DESTROY:
-        /* Shutdown the kernel */
-        kernel_shutdown(&g_kernel);
-
-        /* Clean up fonts */
-        if (hFontUI)   DeleteObject(hFontUI);
-        if (hFontMono) DeleteObject(hFontMono);
-
         PostQuitMessage(0);
         return 0;
     }
