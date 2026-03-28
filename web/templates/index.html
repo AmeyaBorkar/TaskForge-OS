@@ -1,0 +1,751 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TaskForge Banking System</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    background: #1a1a2e;
+    color: #eee;
+    min-height: 100vh;
+}
+
+.header {
+    background: #16213e;
+    padding: 16px 24px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 2px solid #e94560;
+}
+.header h1 { font-size: 20px; font-weight: 700; letter-spacing: 2px; }
+.header h1 span { color: #e94560; }
+.header .subtitle { color: #8892b0; font-size: 13px; margin-left: 12px; }
+.os-badge {
+    background: #0f3460;
+    color: #4ecca3;
+    padding: 6px 14px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+    border: 1px solid #233554;
+}
+.os-badge .dot {
+    display: inline-block;
+    width: 8px; height: 8px;
+    background: #4ecca3;
+    border-radius: 50%;
+    margin-right: 6px;
+    animation: pulse 2s infinite;
+}
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+}
+
+.tabs {
+    display: flex;
+    background: #16213e;
+    padding: 0 24px;
+    gap: 0;
+    border-bottom: 1px solid #233554;
+}
+.tab-btn {
+    padding: 12px 24px;
+    background: none;
+    border: none;
+    color: #8892b0;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+    border-bottom: 3px solid transparent;
+    transition: all 0.2s;
+    font-family: inherit;
+}
+.tab-btn:hover { color: #eee; }
+.tab-btn.active { color: #e94560; border-bottom-color: #e94560; }
+
+.main { padding: 24px; max-width: 1400px; margin: 0 auto; }
+.tab-content { display: none; }
+.tab-content.active-tab { display: block; }
+
+.columns { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+.full-width { grid-column: 1 / -1; }
+
+.card {
+    background: #16213e;
+    border-radius: 8px;
+    padding: 20px;
+    margin-bottom: 16px;
+    border: 1px solid #233554;
+}
+.card h3 {
+    color: #e94560;
+    margin-bottom: 16px;
+    font-size: 14px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+input, select {
+    background: #0f3460;
+    border: 1px solid #233554;
+    color: #eee;
+    padding: 10px 14px;
+    border-radius: 6px;
+    width: 100%;
+    font-size: 14px;
+    margin-bottom: 10px;
+    font-family: inherit;
+}
+input::placeholder { color: #556688; }
+input:focus, select:focus { outline: none; border-color: #e94560; }
+select option { background: #0f3460; color: #eee; }
+
+.btn-row { display: flex; gap: 10px; margin-top: 4px; }
+button {
+    padding: 10px 20px;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 600;
+    transition: opacity 0.2s;
+    font-family: inherit;
+}
+button:hover { opacity: 0.85; }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-primary { background: #e94560; color: white; }
+.btn-success { background: #4ecca3; color: #1a1a2e; }
+.btn-warning { background: #f0a500; color: #1a1a2e; }
+.btn-info { background: #3282b8; color: white; }
+
+.terminal {
+    background: #0a0a15;
+    color: #4ecca3;
+    font-family: 'Consolas', 'Courier New', monospace;
+    font-size: 13px;
+    padding: 16px;
+    border-radius: 6px;
+    max-height: 300px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    line-height: 1.6;
+    min-height: 80px;
+}
+.terminal .trace-line { padding: 1px 0; }
+.terminal .trace-error { color: #e94560; }
+.terminal .trace-info { color: #3282b8; }
+.terminal .trace-dim { color: #556688; }
+
+table { width: 100%; border-collapse: collapse; }
+th {
+    text-align: left;
+    padding: 10px;
+    color: #8892b0;
+    border-bottom: 1px solid #233554;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+td { padding: 10px; border-bottom: 1px solid #1a1a2e; font-size: 14px; }
+tr:hover td { background: rgba(15, 52, 96, 0.4); }
+.empty-row td { color: #556688; text-align: center; font-style: italic; }
+
+.balance-display {
+    background: #0a0a15;
+    border-radius: 6px;
+    padding: 16px;
+    margin-top: 10px;
+    text-align: center;
+    font-size: 24px;
+    font-weight: 700;
+    color: #4ecca3;
+    display: none;
+}
+
+.dash-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+.dash-card { background: #16213e; border-radius: 8px; padding: 20px; border: 1px solid #233554; }
+.dash-card h3 {
+    font-size: 14px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.dash-card h3 .icon {
+    width: 28px; height: 28px;
+    border-radius: 6px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px;
+}
+.dash-stat { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #1a1a2e; }
+.dash-stat .label { color: #8892b0; font-size: 13px; }
+.dash-stat .value { font-weight: 600; font-size: 13px; }
+
+.config-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+
+.trace-panel {
+    background: #0a0a15;
+    color: #4ecca3;
+    font-family: 'Consolas', 'Courier New', monospace;
+    font-size: 13px;
+    padding: 20px;
+    border-radius: 8px;
+    min-height: 500px;
+    max-height: 70vh;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    line-height: 1.7;
+    border: 1px solid #233554;
+}
+
+.top-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+.top-bar h2 { font-size: 16px; color: #8892b0; font-weight: 500; }
+
+.error-msg { color: #e94560; background: rgba(233,69,96,0.1); padding: 10px; border-radius: 6px; margin-top: 8px; font-size: 13px; display: none; }
+
+@media (max-width: 900px) {
+    .columns, .dash-grid, .config-grid { grid-template-columns: 1fr; }
+    .header { flex-direction: column; gap: 10px; text-align: center; }
+    .tabs { overflow-x: auto; }
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+    <div style="display:flex;align-items:center;">
+        <h1><span>TASKFORGE</span></h1>
+        <span class="subtitle">Banking System on OS Kernel</span>
+    </div>
+    <div class="os-badge"><span class="dot"></span>OS: Running</div>
+</div>
+
+<div class="tabs">
+    <button class="tab-btn active" data-tab="banking" onclick="showTab('banking')">Banking</button>
+    <button class="tab-btn" data-tab="dashboard" onclick="showTab('dashboard')">OS Dashboard</button>
+    <button class="tab-btn" data-tab="config" onclick="showTab('config')">Configuration</button>
+    <button class="tab-btn" data-tab="trace" onclick="showTab('trace')">Trace Log</button>
+</div>
+
+<div class="main">
+
+<!-- TAB: Banking -->
+<div id="tab-banking" class="tab-content active-tab">
+    <div class="columns">
+        <div class="left-col">
+            <div class="card">
+                <h3>Create Account</h3>
+                <input type="text" id="acc-name" placeholder="Account Holder Name">
+                <input type="number" id="acc-balance" placeholder="Initial Balance" min="0" step="0.01">
+                <button class="btn-primary" onclick="createAccount(this)">Create Account</button>
+                <div id="create-error" class="error-msg"></div>
+            </div>
+
+            <div class="card">
+                <h3>Transactions</h3>
+                <input type="number" id="txn-account" placeholder="Account ID" min="1">
+                <input type="number" id="txn-amount" placeholder="Amount" min="0" step="0.01">
+                <div class="btn-row">
+                    <button class="btn-success" onclick="deposit(this)">Deposit</button>
+                    <button class="btn-warning" onclick="withdraw(this)">Withdraw</button>
+                </div>
+                <div id="txn-error" class="error-msg"></div>
+            </div>
+
+            <div class="card">
+                <h3>Transfer</h3>
+                <input type="number" id="xfer-from" placeholder="From Account ID" min="1">
+                <input type="number" id="xfer-to" placeholder="To Account ID" min="1">
+                <input type="number" id="xfer-amount" placeholder="Amount" min="0" step="0.01">
+                <button class="btn-primary" onclick="transfer(this)">Transfer</button>
+                <div id="xfer-error" class="error-msg"></div>
+            </div>
+
+            <div class="card">
+                <h3>Balance Check</h3>
+                <input type="number" id="bal-account" placeholder="Account ID" min="1">
+                <button class="btn-info" onclick="checkBalance(this)">Check Balance</button>
+                <div id="balance-display" class="balance-display"></div>
+                <div id="bal-error" class="error-msg"></div>
+            </div>
+        </div>
+
+        <div class="right-col">
+            <div class="card">
+                <h3>Accounts</h3>
+                <table>
+                    <thead><tr><th>ID</th><th>Holder</th><th>Balance</th></tr></thead>
+                    <tbody id="accounts-table">
+                        <tr class="empty-row"><td colspan="3">No accounts yet</td></tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="card">
+                <h3>Recent Transactions</h3>
+                <table>
+                    <thead><tr><th>Type</th><th>From</th><th>To</th><th>Amount</th><th>PID</th><th>Time</th></tr></thead>
+                    <tbody id="transactions-table">
+                        <tr class="empty-row"><td colspan="6">No transactions yet</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="full-width">
+            <div class="card">
+                <h3>Operation Result</h3>
+                <div id="result-panel" class="terminal">
+                    <span class="trace-dim">Awaiting operations...</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- TAB: OS Dashboard -->
+<div id="tab-dashboard" class="tab-content">
+    <div class="top-bar">
+        <h2>Kernel State Overview</h2>
+        <button class="btn-info" onclick="refreshDashboard(this)">Refresh</button>
+    </div>
+    <div class="dash-grid">
+        <div class="dash-card">
+            <h3><span class="icon" style="background:#e94560;color:#fff;">P</span> Processes</h3>
+            <div class="dash-stat"><span class="label">Total</span><span class="value" id="ds-proc-total">--</span></div>
+            <div class="dash-stat"><span class="label">Active</span><span class="value" id="ds-proc-active">--</span></div>
+            <div class="dash-stat"><span class="label">Terminated</span><span class="value" id="ds-proc-terminated">--</span></div>
+            <div class="dash-stat"><span class="label">Scheduler</span><span class="value" id="ds-proc-scheduler">--</span></div>
+        </div>
+        <div class="dash-card">
+            <h3><span class="icon" style="background:#4ecca3;color:#1a1a2e;">M</span> Memory</h3>
+            <div class="dash-stat"><span class="label">Used / Total (KB)</span><span class="value" id="ds-mem-usage">--</span></div>
+            <div class="dash-stat"><span class="label">Strategy</span><span class="value" id="ds-mem-strategy">--</span></div>
+            <div class="dash-stat"><span class="label">Fragmentation</span><span class="value" id="ds-mem-frag">--</span></div>
+            <div class="dash-stat"><span class="label">Blocks (Alloc / Free)</span><span class="value" id="ds-mem-blocks">--</span></div>
+        </div>
+        <div class="dash-card">
+            <h3><span class="icon" style="background:#3282b8;color:#fff;">C</span> Page Cache</h3>
+            <div class="dash-stat"><span class="label">Algorithm</span><span class="value" id="ds-cache-algo">--</span></div>
+            <div class="dash-stat"><span class="label">Entries (Used / Total)</span><span class="value" id="ds-cache-entries">--</span></div>
+            <div class="dash-stat"><span class="label">Hits</span><span class="value" id="ds-cache-hits">--</span></div>
+            <div class="dash-stat"><span class="label">Misses</span><span class="value" id="ds-cache-misses">--</span></div>
+            <div class="dash-stat"><span class="label">Hit Ratio</span><span class="value" id="ds-cache-ratio">--</span></div>
+        </div>
+        <div class="dash-card">
+            <h3><span class="icon" style="background:#f0a500;color:#1a1a2e;">D</span> Deadlock Manager</h3>
+            <div class="dash-stat"><span class="label">Prevention</span><span class="value" id="ds-dl-prevention">--</span></div>
+            <div class="dash-stat"><span class="label">Detected</span><span class="value" id="ds-dl-detected">--</span></div>
+            <div class="dash-stat"><span class="label">Resources Available</span><span class="value" id="ds-dl-resources">--</span></div>
+        </div>
+        <div class="dash-card">
+            <h3><span class="icon" style="background:#9b59b6;color:#fff;">F</span> File System</h3>
+            <div class="dash-stat"><span class="label">Files</span><span class="value" id="ds-fs-files">--</span></div>
+            <div class="dash-stat"><span class="label">Directories</span><span class="value" id="ds-fs-dirs">--</span></div>
+            <div class="dash-stat"><span class="label">Total Data Size</span><span class="value" id="ds-fs-size">--</span></div>
+        </div>
+        <div class="dash-card">
+            <h3><span class="icon" style="background:#e74c3c;color:#fff;">I</span> I/O Subsystem</h3>
+            <div class="dash-stat"><span class="label">Disk Algorithm</span><span class="value" id="ds-io-algo">--</span></div>
+            <div class="dash-stat"><span class="label">Head Position</span><span class="value" id="ds-io-head">--</span></div>
+            <div class="dash-stat"><span class="label">Total Seek</span><span class="value" id="ds-io-seek">--</span></div>
+            <div class="dash-stat"><span class="label">Operations</span><span class="value" id="ds-io-ops">--</span></div>
+            <div class="dash-stat"><span class="label">Reads / Writes</span><span class="value" id="ds-io-rw">--</span></div>
+        </div>
+    </div>
+</div>
+
+<!-- TAB: Configuration -->
+<div id="tab-config" class="tab-content">
+    <div class="top-bar">
+        <h2>Kernel Configuration</h2>
+        <button class="btn-primary" onclick="applyConfig(this)">Apply Configuration</button>
+    </div>
+    <div class="config-grid">
+        <div class="card">
+            <h3>Scheduler</h3>
+            <label style="color:#8892b0;font-size:12px;display:block;margin-bottom:4px;">Algorithm</label>
+            <select id="cfg-scheduler">
+                <option value="FCFS">FCFS</option>
+                <option value="SJF">SJF</option>
+                <option value="PRIORITY">PRIORITY</option>
+                <option value="ROUND_ROBIN">ROUND_ROBIN</option>
+            </select>
+            <label style="color:#8892b0;font-size:12px;display:block;margin-bottom:4px;">Quantum (for Round Robin)</label>
+            <input type="number" id="cfg-quantum" placeholder="Time Quantum" min="1" value="10">
+        </div>
+        <div class="card">
+            <h3>Memory</h3>
+            <label style="color:#8892b0;font-size:12px;display:block;margin-bottom:4px;">Allocation Strategy</label>
+            <select id="cfg-memory">
+                <option value="FIRST_FIT">FIRST_FIT</option>
+                <option value="BEST_FIT">BEST_FIT</option>
+                <option value="WORST_FIT">WORST_FIT</option>
+                <option value="NEXT_FIT">NEXT_FIT</option>
+            </select>
+        </div>
+        <div class="card">
+            <h3>Cache</h3>
+            <label style="color:#8892b0;font-size:12px;display:block;margin-bottom:4px;">Replacement Algorithm</label>
+            <select id="cfg-cache">
+                <option value="LRU">LRU</option>
+                <option value="FIFO">FIFO</option>
+                <option value="CLOCK">CLOCK</option>
+            </select>
+        </div>
+        <div class="card">
+            <h3>Disk I/O</h3>
+            <label style="color:#8892b0;font-size:12px;display:block;margin-bottom:4px;">Scheduling Algorithm</label>
+            <select id="cfg-disk">
+                <option value="FCFS">FCFS</option>
+                <option value="SSTF">SSTF</option>
+                <option value="SCAN">SCAN</option>
+                <option value="C-SCAN">C-SCAN</option>
+            </select>
+        </div>
+    </div>
+    <div id="config-result" class="error-msg" style="margin-top:16px;"></div>
+</div>
+
+<!-- TAB: Trace Log -->
+<div id="tab-trace" class="tab-content">
+    <div class="top-bar">
+        <h2>Kernel Trace Log</h2>
+        <div class="btn-row">
+            <button class="btn-warning" onclick="clearTrace(this)">Clear Log</button>
+            <button class="btn-info" onclick="refreshTrace(this)">Refresh</button>
+        </div>
+    </div>
+    <div id="trace-log" class="trace-panel">
+        <span class="trace-dim">Loading trace log...</span>
+    </div>
+</div>
+
+</div>
+
+<script>
+/* ---- Tab Switching ---- */
+function showTab(tabName) {
+    document.querySelectorAll('.tab-content').forEach(function(t) { t.style.display = 'none'; t.classList.remove('active-tab'); });
+    document.querySelectorAll('.tab-btn').forEach(function(b) { b.classList.remove('active'); });
+    var tab = document.getElementById('tab-' + tabName);
+    if (tab) { tab.style.display = 'block'; tab.classList.add('active-tab'); }
+    var btn = document.querySelector('[data-tab="' + tabName + '"]');
+    if (btn) btn.classList.add('active');
+    if (tabName === 'dashboard') refreshDashboard();
+    if (tabName === 'trace') refreshTrace();
+}
+
+/* ---- Helpers ---- */
+function setLoading(btn, loading) {
+    if (!btn) return;
+    btn.disabled = loading;
+    if (loading) {
+        btn.dataset.origText = btn.textContent;
+        btn.textContent = 'Loading...';
+    } else {
+        btn.textContent = btn.dataset.origText || btn.textContent;
+    }
+}
+
+function showError(id, msg) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    el.style.display = msg ? 'block' : 'none';
+    el.textContent = msg || '';
+}
+
+function clearErrors() {
+    document.querySelectorAll('.error-msg').forEach(function(e) { e.style.display = 'none'; });
+}
+
+async function apiCall(url, method, body) {
+    var opts = { method: method || 'GET', headers: { 'Content-Type': 'application/json' } };
+    if (body) opts.body = JSON.stringify(body);
+    var res = await fetch(url, opts);
+    var data = await res.json();
+    if (!res.ok) throw new Error(data.error || data.message || 'Request failed');
+    return data;
+}
+
+function escapeHtml(str) {
+    var d = document.createElement('div');
+    d.textContent = str;
+    return d.innerHTML;
+}
+
+function formatCurrency(val) {
+    var n = parseFloat(val);
+    return isNaN(n) ? val : n.toFixed(2);
+}
+
+/* ---- Result Panel ---- */
+function showResult(data) {
+    var panel = document.getElementById('result-panel');
+    if (!panel) return;
+    if (data.trace && data.trace.length > 0) {
+        panel.innerHTML = data.trace.map(function(line) {
+            var cls = 'trace-line';
+            if (/error|fail/i.test(line)) cls += ' trace-error';
+            else if (/info|success/i.test(line)) cls += ' trace-info';
+            return '<div class="' + cls + '">' + escapeHtml(line) + '</div>';
+        }).join('');
+    } else if (data.message) {
+        panel.innerHTML = '<div class="trace-line">' + escapeHtml(data.message) + '</div>';
+    } else {
+        panel.innerHTML = '<div class="trace-line">Operation completed.</div>';
+    }
+    panel.scrollTop = panel.scrollHeight;
+}
+
+function showResultError(msg) {
+    var panel = document.getElementById('result-panel');
+    if (!panel) return;
+    panel.innerHTML = '<div class="trace-line trace-error">[ERROR] ' + escapeHtml(msg) + '</div>';
+}
+
+/* ---- Banking: Create Account ---- */
+async function createAccount(btn) {
+    clearErrors();
+    var name = document.getElementById('acc-name').value.trim();
+    var balance = document.getElementById('acc-balance').value;
+    if (!name || balance === '') { showError('create-error', 'Please fill all fields.'); return; }
+    setLoading(btn, true);
+    try {
+        var data = await apiCall('/api/account/create', 'POST', { name: name, balance: parseFloat(balance) });
+        showResult(data);
+        document.getElementById('acc-name').value = '';
+        document.getElementById('acc-balance').value = '';
+        refreshAccounts();
+    } catch (e) {
+        showError('create-error', e.message);
+        showResultError(e.message);
+    }
+    setLoading(btn, false);
+}
+
+/* ---- Banking: Deposit ---- */
+async function deposit(btn) {
+    clearErrors();
+    var account = document.getElementById('txn-account').value;
+    var amount = document.getElementById('txn-amount').value;
+    if (!account || !amount) { showError('txn-error', 'Please fill Account ID and Amount.'); return; }
+    setLoading(btn, true);
+    try {
+        var data = await apiCall('/api/account/deposit', 'POST', { account_id: parseInt(account), amount: parseFloat(amount) });
+        showResult(data);
+        document.getElementById('txn-amount').value = '';
+        refreshAccounts();
+    } catch (e) {
+        showError('txn-error', e.message);
+        showResultError(e.message);
+    }
+    setLoading(btn, false);
+}
+
+/* ---- Banking: Withdraw ---- */
+async function withdraw(btn) {
+    clearErrors();
+    var account = document.getElementById('txn-account').value;
+    var amount = document.getElementById('txn-amount').value;
+    if (!account || !amount) { showError('txn-error', 'Please fill Account ID and Amount.'); return; }
+    setLoading(btn, true);
+    try {
+        var data = await apiCall('/api/account/withdraw', 'POST', { account_id: parseInt(account), amount: parseFloat(amount) });
+        showResult(data);
+        document.getElementById('txn-amount').value = '';
+        refreshAccounts();
+    } catch (e) {
+        showError('txn-error', e.message);
+        showResultError(e.message);
+    }
+    setLoading(btn, false);
+}
+
+/* ---- Banking: Transfer ---- */
+async function transfer(btn) {
+    clearErrors();
+    var from = document.getElementById('xfer-from').value;
+    var to = document.getElementById('xfer-to').value;
+    var amount = document.getElementById('xfer-amount').value;
+    if (!from || !to || !amount) { showError('xfer-error', 'Please fill all transfer fields.'); return; }
+    setLoading(btn, true);
+    try {
+        var data = await apiCall('/api/account/transfer', 'POST', { from_id: parseInt(from), to_id: parseInt(to), amount: parseFloat(amount) });
+        showResult(data);
+        document.getElementById('xfer-amount').value = '';
+        refreshAccounts();
+    } catch (e) {
+        showError('xfer-error', e.message);
+        showResultError(e.message);
+    }
+    setLoading(btn, false);
+}
+
+/* ---- Banking: Check Balance ---- */
+async function checkBalance(btn) {
+    clearErrors();
+    var account = document.getElementById('bal-account').value;
+    if (!account) { showError('bal-error', 'Please enter an Account ID.'); return; }
+    setLoading(btn, true);
+    try {
+        var data = await apiCall('/api/account/balance', 'POST', { account_id: parseInt(account) });
+        var disp = document.getElementById('balance-display');
+        disp.style.display = 'block';
+        disp.textContent = '$' + formatCurrency(data.balance);
+        showResult(data);
+    } catch (e) {
+        showError('bal-error', e.message);
+        showResultError(e.message);
+        document.getElementById('balance-display').style.display = 'none';
+    }
+    setLoading(btn, false);
+}
+
+/* ---- Refresh Accounts & Transactions ---- */
+async function refreshAccounts() {
+    try {
+        var data = await apiCall('/api/accounts', 'GET');
+        var tbody = document.getElementById('accounts-table');
+        if (data.accounts && data.accounts.length > 0) {
+            tbody.innerHTML = data.accounts.map(function(a) {
+                return '<tr><td>' + escapeHtml(String(a.id)) + '</td><td>' + escapeHtml(a.name || a.holder || '') + '</td><td>$' + formatCurrency(a.balance) + '</td></tr>';
+            }).join('');
+        } else {
+            tbody.innerHTML = '<tr class="empty-row"><td colspan="3">No accounts yet</td></tr>';
+        }
+
+        var txBody = document.getElementById('transactions-table');
+        if (data.transactions && data.transactions.length > 0) {
+            txBody.innerHTML = data.transactions.slice(-10).reverse().map(function(t) {
+                return '<tr><td>' + escapeHtml(t.type || '') + '</td><td>' + escapeHtml(String(t.from || '--')) + '</td><td>' + escapeHtml(String(t.to || '--')) + '</td><td>$' + formatCurrency(t.amount) + '</td><td>' + escapeHtml(String(t.pid || '--')) + '</td><td>' + escapeHtml(t.time || '') + '</td></tr>';
+            }).join('');
+        } else {
+            txBody.innerHTML = '<tr class="empty-row"><td colspan="6">No transactions yet</td></tr>';
+        }
+    } catch (e) {
+        /* silent refresh failure */
+    }
+}
+
+/* ---- Dashboard ---- */
+async function refreshDashboard(btn) {
+    if (btn) setLoading(btn, true);
+    try {
+        var data = await apiCall('/api/dashboard', 'GET');
+
+        var p = data.processes || {};
+        document.getElementById('ds-proc-total').textContent = p.total != null ? p.total : '--';
+        document.getElementById('ds-proc-active').textContent = p.active != null ? p.active : '--';
+        document.getElementById('ds-proc-terminated').textContent = p.terminated != null ? p.terminated : '--';
+        document.getElementById('ds-proc-scheduler').textContent = p.scheduler || '--';
+
+        var m = data.memory || {};
+        document.getElementById('ds-mem-usage').textContent = (m.used != null ? m.used : '--') + ' / ' + (m.total != null ? m.total : '--');
+        document.getElementById('ds-mem-strategy').textContent = m.strategy || '--';
+        document.getElementById('ds-mem-frag').textContent = m.fragmentation != null ? m.fragmentation + '%' : '--';
+        document.getElementById('ds-mem-blocks').textContent = (m.allocated != null ? m.allocated : '--') + ' / ' + (m.free != null ? m.free : '--');
+
+        var c = data.cache || {};
+        document.getElementById('ds-cache-algo').textContent = c.algorithm || '--';
+        document.getElementById('ds-cache-entries').textContent = (c.used != null ? c.used : '--') + ' / ' + (c.total != null ? c.total : '--');
+        document.getElementById('ds-cache-hits').textContent = c.hits != null ? c.hits : '--';
+        document.getElementById('ds-cache-misses').textContent = c.misses != null ? c.misses : '--';
+        document.getElementById('ds-cache-ratio').textContent = c.hit_ratio != null ? c.hit_ratio + '%' : '--';
+
+        var d = data.deadlock || {};
+        document.getElementById('ds-dl-prevention').textContent = d.prevention ? 'ON' : 'OFF';
+        document.getElementById('ds-dl-detected').textContent = d.detected != null ? d.detected : '--';
+        document.getElementById('ds-dl-resources').textContent = d.resources != null ? d.resources : '--';
+
+        var f = data.filesystem || {};
+        document.getElementById('ds-fs-files').textContent = f.files != null ? f.files : '--';
+        document.getElementById('ds-fs-dirs').textContent = f.directories != null ? f.directories : '--';
+        document.getElementById('ds-fs-size').textContent = f.total_size || '--';
+
+        var io = data.io || {};
+        document.getElementById('ds-io-algo').textContent = io.algorithm || '--';
+        document.getElementById('ds-io-head').textContent = io.head_position != null ? io.head_position : '--';
+        document.getElementById('ds-io-seek').textContent = io.total_seek != null ? io.total_seek : '--';
+        document.getElementById('ds-io-ops').textContent = io.operations != null ? io.operations : '--';
+        document.getElementById('ds-io-rw').textContent = (io.reads != null ? io.reads : '--') + ' / ' + (io.writes != null ? io.writes : '--');
+    } catch (e) {
+        /* silent failure */
+    }
+    if (btn) setLoading(btn, false);
+}
+
+/* ---- Configuration ---- */
+async function applyConfig(btn) {
+    setLoading(btn, true);
+    var result = document.getElementById('config-result');
+    result.style.display = 'none';
+    try {
+        var data = await apiCall('/api/config', 'POST', {
+            scheduler: document.getElementById('cfg-scheduler').value,
+            quantum: parseInt(document.getElementById('cfg-quantum').value),
+            memory: document.getElementById('cfg-memory').value,
+            cache: document.getElementById('cfg-cache').value,
+            disk: document.getElementById('cfg-disk').value
+        });
+        result.style.display = 'block';
+        result.style.color = '#4ecca3';
+        result.style.background = 'rgba(78,204,163,0.1)';
+        result.textContent = data.message || 'Configuration applied successfully.';
+    } catch (e) {
+        result.style.display = 'block';
+        result.style.color = '#e94560';
+        result.style.background = 'rgba(233,69,96,0.1)';
+        result.textContent = e.message;
+    }
+    setLoading(btn, false);
+}
+
+/* ---- Trace Log ---- */
+async function refreshTrace(btn) {
+    if (btn) setLoading(btn, true);
+    try {
+        var data = await apiCall('/api/trace', 'GET');
+        var panel = document.getElementById('trace-log');
+        if (data.trace && data.trace.length > 0) {
+            panel.innerHTML = data.trace.map(function(line) {
+                var cls = '';
+                if (/error|fail/i.test(line)) cls = ' trace-error';
+                else if (/\[INFO\]/i.test(line)) cls = ' trace-info';
+                return '<div class="trace-line' + cls + '">' + escapeHtml(line) + '</div>';
+            }).join('');
+        } else {
+            panel.innerHTML = '<span class="trace-dim">No trace entries yet.</span>';
+        }
+        panel.scrollTop = panel.scrollHeight;
+    } catch (e) {
+        document.getElementById('trace-log').innerHTML = '<span class="trace-dim">Failed to load trace log.</span>';
+    }
+    if (btn) setLoading(btn, false);
+}
+
+async function clearTrace(btn) {
+    setLoading(btn, true);
+    try {
+        await apiCall('/api/trace/clear', 'POST');
+        document.getElementById('trace-log').innerHTML = '<span class="trace-dim">Log cleared.</span>';
+    } catch (e) {
+        /* silent */
+    }
+    setLoading(btn, false);
+}
+
+/* ---- Init ---- */
+document.addEventListener('DOMContentLoaded', function() {
+    refreshAccounts();
+});
+</script>
+</body>
+</html>
