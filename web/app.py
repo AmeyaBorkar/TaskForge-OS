@@ -603,6 +603,114 @@ def api_trace_clear():
     kernel.trace.clear()
     return jsonify({'success': True})
 
+@app.route('/api/concepts')
+def api_concepts():
+    """OS syllabus -> implementation mapping for the course-project showcase."""
+    d = kernel.dashboard()
+    units = [
+        {
+            'unit': 'Unit I',
+            'title': 'Introduction to OS',
+            'owner': 'Ameya Borkar',
+            'topics': [
+                {'name': 'System Calls',
+                 'impl': 'kernel/os_syscall.h + Kernel.* methods in web/app.py',
+                 'live': f"clock_tick = {d['clock_tick']} (every syscall advances it)"},
+                {'name': 'OS Services (process / memory / file / IO / comm / error-detection)',
+                 'impl': 'kernel/os_kernel.c',
+                 'live': f"uptime = {d['uptime']}s"},
+                {'name': 'OS Types demonstrated',
+                 'impl': 'Multiprogramming + Time-sharing (multiple procs, preemptive sched)',
+                 'live': f"active processes = {d['processes']['active']}"},
+            ],
+        },
+        {
+            'unit': 'Unit II',
+            'title': 'Process Management',
+            'owner': 'Ameya (PCB, states) + Aditya (sync) + Ayush (concurrency demos)',
+            'topics': [
+                {'name': 'Process Concept + PCB + 5-state model',
+                 'impl': 'Kernel.create_process / set_state (NEW->READY->RUNNING->WAITING->TERMINATED)',
+                 'live': f"total procs = {d['processes']['total']}, terminated = {d['processes']['terminated']}, avg turnaround = {d['processes']['avg_turnaround']}"},
+                {'name': 'Mutual Exclusion (H/W, S/W, Semaphores, Mutex, Monitors)',
+                 'impl': 'src/process_mgmt.c; Kernel.resource_request uses semaphore counts',
+                 'live': f"resource vector = {d['deadlock']['resources']}"},
+                {'name': 'Classical problems (Readers-Writers, Producer-Consumer, Dining Philosophers)',
+                 'impl': 'src/process_mgmt.c (standalone demos in v1 simulator)',
+                 'live': 'run ./taskforge.exe for interactive demos'},
+            ],
+        },
+        {
+            'unit': 'Unit III',
+            'title': 'Process Scheduling',
+            'owner': 'Ayush Agnihotri',
+            'topics': [
+                {'name': 'Scheduling Algorithms: FCFS, SJF, Round Robin, Priority',
+                 'impl': 'src/scheduler.c + Kernel.schedule_next',
+                 'live': f"current scheduler = {d['scheduler']} (switch in Configuration tab)"},
+                {'name': 'Preemptive vs Non-preemptive, Long/Medium/Short-term schedulers',
+                 'impl': 'src/scheduler.c',
+                 'live': f"avg wait time = {d['processes']['avg_wait']}"},
+            ],
+        },
+        {
+            'unit': 'Unit IV',
+            'title': 'Deadlocks',
+            'owner': 'Aditya Chimurkar',
+            'topics': [
+                {'name': "Banker's Algorithm (Avoidance) + safety check",
+                 'impl': 'Kernel.banker_safe / _safety_loop; every resource_request is validated',
+                 'live': f"unsafe requests denied = {d['deadlock']['denied']}"},
+                {'name': 'Deadlock Prevention (resource ordering on Transfer)',
+                 'impl': 'BankApp.transfer locks lower resource_id first',
+                 'live': f"prevention enabled = {d['deadlock']['prevention']}"},
+                {'name': 'Deadlock Detection + Recovery',
+                 'impl': 'Kernel.deadlock_check (same safety loop, reports stuck PIDs)',
+                 'live': f"currently stuck procs = {d['deadlock']['detected']}"},
+            ],
+        },
+        {
+            'unit': 'Unit V',
+            'title': 'Memory Management',
+            'owner': 'Arnav Gupta',
+            'topics': [
+                {'name': 'Placement: First Fit, Best Fit, Worst Fit, Next Fit + coalescing',
+                 'impl': 'src/memory_mgmt.c + Kernel.mem_alloc / _coalesce',
+                 'live': f"strategy = {d['memory']['strategy']}, used = {d['memory']['used']}/{d['memory']['total']} KB, fragmentation = {d['memory']['fragmentation']}%"},
+                {'name': 'Virtual Memory: Paging, Segmentation, TLB',
+                 'impl': 'src/memory_mgmt.c (v1 simulator demos)',
+                 'live': f"blocks allocated = {d['memory']['allocated']}, free = {d['memory']['free_blocks']}"},
+                {'name': 'Page Replacement: FIFO, LRU, Clock',
+                 'impl': 'Kernel.cache_access / _cache_victim (page cache for account records)',
+                 'live': f"algo = {d['cache']['algorithm']}, hits = {d['cache']['hits']}, misses = {d['cache']['misses']}, hit ratio = {d['cache']['hit_ratio']}%"},
+            ],
+        },
+        {
+            'unit': 'Unit VI',
+            'title': 'I/O and File Management',
+            'owner': 'Aarush Bakshi',
+            'topics': [
+                {'name': 'Disk Scheduling: FCFS, SSTF, SCAN, C-SCAN',
+                 'impl': 'src/io_file_mgmt.c + Kernel.io_process',
+                 'live': f"algo = {d['io']['algorithm']}, head = {d['io']['head_position']}, total seek = {d['io']['total_seek']}, ops = {d['io']['operations']}"},
+                {'name': 'I/O Buffering + device characteristics',
+                 'impl': 'Kernel.fs_read/fs_write route through cache and buf counters',
+                 'live': f"buffered reads = {d['io']['reads']}, writes = {d['io']['writes']}"},
+                {'name': 'File Management: directories, file sharing, free space',
+                 'impl': 'Kernel.fs_create / fs_open / fs_read / fs_write (VFS)',
+                 'live': f"files = {d['filesystem']['files']}, directories = {d['filesystem']['directories']}, total size = {d['filesystem']['total_size']}"},
+            ],
+        },
+    ]
+    return jsonify({'units': units,
+                    'team': [
+                        {'name': 'Ameya Borkar', 'role': 'Lead — Architecture, Syscalls, Process Mgmt, Integration'},
+                        {'name': 'Ayush Agnihotri', 'role': 'CPU Scheduling, Concurrency / Producer-Consumer'},
+                        {'name': 'Arnav Gupta', 'role': 'Memory Placement, Virtual Memory, Page Replacement'},
+                        {'name': 'Aditya Chimurkar', 'role': "Deadlocks (Banker's), Mutual Exclusion, Sync problems"},
+                        {'name': 'Aarush Bakshi', 'role': 'Disk Scheduling, I/O Buffering, File Management'},
+                    ]})
+
 if __name__ == '__main__':
     print("TaskForge OS Kernel booting...")
     print(f"  Memory   : {kernel.mem_total} KB")

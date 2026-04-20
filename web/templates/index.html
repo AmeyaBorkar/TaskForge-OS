@@ -210,6 +210,66 @@ tr:hover td { background: rgba(15, 52, 96, 0.4); }
 
 .error-msg { color: #e94560; background: rgba(233,69,96,0.1); padding: 10px; border-radius: 6px; margin-top: 8px; font-size: 13px; display: none; }
 
+/* OS Concepts tab */
+.team-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-bottom: 24px; }
+.team-card {
+    background: #0f3460;
+    border: 1px solid #233554;
+    border-left: 3px solid #4ecca3;
+    padding: 12px 14px;
+    border-radius: 6px;
+}
+.team-card .tm-name { font-weight: 700; color: #eee; font-size: 14px; margin-bottom: 4px; }
+.team-card .tm-role { color: #8892b0; font-size: 12px; line-height: 1.5; }
+.team-card.lead { border-left-color: #e94560; }
+.team-card.lead .tm-name::after {
+    content: 'LEAD';
+    background: #e94560; color: white;
+    font-size: 9px; padding: 2px 6px; border-radius: 3px;
+    margin-left: 8px; letter-spacing: 1px;
+}
+
+.unit-card {
+    background: #16213e;
+    border-radius: 8px;
+    border: 1px solid #233554;
+    border-left: 4px solid #e94560;
+    padding: 18px 20px;
+    margin-bottom: 16px;
+}
+.unit-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 4px;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+.unit-head .unit-tag {
+    background: #e94560;
+    color: white;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 3px 8px;
+    border-radius: 3px;
+    letter-spacing: 1px;
+    margin-right: 8px;
+}
+.unit-head h3 { color: #eee; font-size: 16px; font-weight: 600; display: inline; }
+.unit-head .owner { color: #4ecca3; font-size: 12px; font-style: italic; }
+.unit-topics { margin-top: 12px; display: grid; gap: 10px; }
+.topic {
+    background: #0a0a15;
+    border-left: 2px solid #3282b8;
+    padding: 10px 12px;
+    border-radius: 4px;
+    font-size: 13px;
+    line-height: 1.6;
+}
+.topic .t-name { color: #f0a500; font-weight: 600; }
+.topic .t-impl { color: #8892b0; font-size: 12px; font-family: 'Consolas', monospace; margin-top: 4px; }
+.topic .t-live { color: #4ecca3; font-size: 12px; margin-top: 4px; font-family: 'Consolas', monospace; }
+
 @media (max-width: 900px) {
     .columns, .dash-grid, .config-grid { grid-template-columns: 1fr; }
     .header { flex-direction: column; gap: 10px; text-align: center; }
@@ -230,6 +290,7 @@ tr:hover td { background: rgba(15, 52, 96, 0.4); }
 <div class="tabs">
     <button class="tab-btn active" data-tab="banking" onclick="showTab('banking')">Banking</button>
     <button class="tab-btn" data-tab="dashboard" onclick="showTab('dashboard')">OS Dashboard</button>
+    <button class="tab-btn" data-tab="concepts" onclick="showTab('concepts')">OS Concepts</button>
     <button class="tab-btn" data-tab="config" onclick="showTab('config')">Configuration</button>
     <button class="tab-btn" data-tab="trace" onclick="showTab('trace')">Trace Log</button>
 </div>
@@ -362,6 +423,27 @@ tr:hover td { background: rgba(15, 52, 96, 0.4); }
     </div>
 </div>
 
+<!-- TAB: OS Concepts -->
+<div id="tab-concepts" class="tab-content">
+    <div class="top-bar">
+        <h2>Operating Systems Course — Syllabus Coverage Showcase</h2>
+        <button class="btn-info" onclick="refreshConcepts(this)">Refresh Live Metrics</button>
+    </div>
+    <div class="card" style="margin-bottom:16px;">
+        <h3>Team</h3>
+        <div id="concepts-team" class="team-grid">
+            <span class="trace-dim">Loading team...</span>
+        </div>
+        <div style="color:#8892b0;font-size:12px;line-height:1.6;">
+            Each banking operation exercises every syllabus unit. Perform a <b>Transfer</b> and every
+            card below updates — that single action demonstrates the entire OS stack running.
+        </div>
+    </div>
+    <div id="concepts-units">
+        <div class="card"><span class="trace-dim">Loading syllabus mapping...</span></div>
+    </div>
+</div>
+
 <!-- TAB: Configuration -->
 <div id="tab-config" class="tab-content">
     <div class="top-bar">
@@ -441,6 +523,7 @@ function showTab(tabName) {
     if (btn) btn.classList.add('active');
     if (tabName === 'dashboard') refreshDashboard();
     if (tabName === 'trace') refreshTrace();
+    if (tabName === 'concepts') refreshConcepts();
 }
 
 /* ---- Helpers ---- */
@@ -727,6 +810,46 @@ async function refreshTrace(btn) {
         panel.scrollTop = panel.scrollHeight;
     } catch (e) {
         document.getElementById('trace-log').innerHTML = '<span class="trace-dim">Failed to load trace log.</span>';
+    }
+    if (btn) setLoading(btn, false);
+}
+
+/* ---- OS Concepts ---- */
+async function refreshConcepts(btn) {
+    if (btn) setLoading(btn, true);
+    try {
+        var data = await apiCall('/api/concepts', 'GET');
+
+        var teamEl = document.getElementById('concepts-team');
+        teamEl.innerHTML = (data.team || []).map(function(m) {
+            var isLead = /lead/i.test(m.role);
+            return '<div class="team-card' + (isLead ? ' lead' : '') + '">' +
+                   '<div class="tm-name">' + escapeHtml(m.name) + '</div>' +
+                   '<div class="tm-role">' + escapeHtml(m.role) + '</div>' +
+                   '</div>';
+        }).join('');
+
+        var unitsEl = document.getElementById('concepts-units');
+        unitsEl.innerHTML = (data.units || []).map(function(u) {
+            var topics = (u.topics || []).map(function(t) {
+                return '<div class="topic">' +
+                       '<div class="t-name">' + escapeHtml(t.name) + '</div>' +
+                       '<div class="t-impl">impl: ' + escapeHtml(t.impl) + '</div>' +
+                       '<div class="t-live">live: ' + escapeHtml(t.live) + '</div>' +
+                       '</div>';
+            }).join('');
+            return '<div class="unit-card">' +
+                   '<div class="unit-head">' +
+                     '<div><span class="unit-tag">' + escapeHtml(u.unit) + '</span>' +
+                     '<h3>' + escapeHtml(u.title) + '</h3></div>' +
+                     '<span class="owner">Owner: ' + escapeHtml(u.owner) + '</span>' +
+                   '</div>' +
+                   '<div class="unit-topics">' + topics + '</div>' +
+                   '</div>';
+        }).join('');
+    } catch (e) {
+        document.getElementById('concepts-units').innerHTML =
+            '<div class="card"><span class="trace-error">Failed to load concepts: ' + escapeHtml(e.message) + '</span></div>';
     }
     if (btn) setLoading(btn, false);
 }
