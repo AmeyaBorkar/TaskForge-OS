@@ -1,6 +1,24 @@
 # TaskForge OS — Banking System on a Custom Operating System Kernel
 
-A course project for **Operating Systems** that implements a complete OS kernel in C, with a **Banking Application** running on top of it through a system call interface. Every banking operation (deposit, withdraw, transfer) goes through the OS kernel — creating processes, allocating memory, locking resources, reading/writing files, and scheduling I/O — demonstrating how real operating systems work under the hood.
+A course project for **Operating Systems** that implements a complete OS kernel in C (with a Python/Flask port), and a **Banking Application** running on top of it through a system call interface. Every banking operation (deposit, withdraw, transfer) goes through the OS kernel — creating processes, allocating memory, locking resources, reading/writing files, and scheduling I/O — demonstrating how real operating systems work under the hood.
+
+## Quick Start
+
+The fastest way to see every OS concept in action is the web UI:
+
+```bash
+pip install flask
+python web/app.py
+# Open http://localhost:5000 in your browser
+```
+
+You get four tabs:
+- **Banking** — create accounts, deposit, withdraw, transfer (with live kernel trace)
+- **OS Dashboard** — live state of processes, memory, cache, deadlock, filesystem, I/O
+- **OS Concepts** — syllabus unit → implementation file → live metric (course-project showcase)
+- **Configuration** — switch scheduler / memory strategy / cache policy / disk algorithm on the fly
+
+For the native C builds (CLI + Win32 GUI), see [Building](#building) below.
 
 ## Architecture
 
@@ -56,8 +74,8 @@ When you perform a banking operation, the OS kernel handles everything:
 
 ### Prerequisites
 
-- GCC (MinGW/MSYS2 on Windows, or GCC on Linux)
-- pthreads library
+- **Web UI:** Python 3.8+ and Flask (`pip install flask`)
+- **Native C builds:** GCC (MinGW/MSYS2 on Windows, or GCC on Linux) + pthreads
 
 ### Build Commands
 
@@ -84,32 +102,49 @@ gcc -Wall -Wextra -std=c11 -Ikernel -o taskforge_gui_v2.exe gui/taskforge_gui_v2
 
 ## Running
 
+The project ships in three forms — pick whichever suits the demo.
+
+### 1. Web UI (recommended for the course showcase)
+
 ```bash
-# CLI version (main project)
-./taskforge_v2.exe
+pip install flask
+python web/app.py
+```
 
-# GUI version
-./taskforge_gui_v2.exe
+Open `http://localhost:5000`. The **OS Concepts** tab maps each syllabus unit to the exact file / function in the kernel, with live metrics that update as you perform banking operations.
 
-# v1 OS Simulator (standalone demos)
-./taskforge.exe
+### 2. Native CLI
+
+```bash
+./taskforge_v2.exe        # Banking on OS kernel (main project)
+./taskforge.exe           # v1 standalone algorithm simulator
+```
+
+### 3. Native Win32 GUI
+
+```bash
+./taskforge_gui_v2.exe    # Banking + OS dashboard GUI
+./taskforge_gui.exe       # v1 simulator GUI
 ```
 
 ## Project Structure
 
 ```
 TaskForge/
-├── kernel/                     # OS Kernel Layer
+├── kernel/                     # OS Kernel Layer (C)
 │   ├── os_kernel.h             # Kernel types and API declarations
-│   ├── os_kernel.c             # Kernel implementation (1576 lines)
+│   ├── os_kernel.c             # Kernel implementation
 │   └── os_syscall.h            # System call interface for applications
-├── app/                        # Application Layer
+├── app/                        # Application Layer (C)
 │   ├── bank.h                  # Banking types and declarations
-│   └── bank.c                  # Banking application (788 lines)
+│   └── bank.c                  # Banking application
 ├── main_v2.c                   # v2 entry point (OS boot + banking menu)
 ├── gui/
 │   ├── taskforge_gui_v2.c      # Win32 GUI for v2 (banking + OS dashboard)
 │   └── taskforge_gui.c         # Win32 GUI for v1 (OS simulator)
+├── web/                        # Python/Flask port with web dashboard
+│   ├── app.py                  # Kernel + Banking + REST API
+│   └── templates/index.html    # Dark-theme SPA (Banking / Dashboard / OS Concepts / Config / Trace)
 ├── include/                    # v1 module headers
 ├── src/                        # v1 module implementations
 │   ├── process_mgmt.c          # Process states, concurrency demos
@@ -120,7 +155,9 @@ TaskForge/
 │   └── task_ops.c              # Real file operations
 ├── main.c                      # v1 entry point
 ├── build.bat                   # Windows build script
-└── Makefile                    # Make build system
+├── Makefile                    # Make build system
+├── CONTRIBUTIONS.md            # Team distribution of syllabus concepts
+└── README.md
 ```
 
 ## Features
@@ -140,13 +177,25 @@ TaskForge/
 - File system stats and open file descriptors
 - Disk I/O metrics and scheduling algorithm
 
+### OS Concepts Showcase (web only)
+A dedicated tab that lists all six syllabus units, the exact file/function
+that implements each topic, the team member responsible, and a live kernel
+metric proving it works. Hit *Refresh* after any banking action to watch the
+numbers update.
+
 ### v1 Simulator (Bonus)
 Interactive demos for all OS algorithms — enter your own process sets, reference strings, and disk queues to see algorithms execute step by step with visual output.
 
 ## Tech Stack
 
-- **Language**: C (C11)
+- **Languages**: C (C11) for the kernel/banking/GUI; Python 3 + Flask for the web port
 - **Threading**: POSIX threads (pthreads)
-- **GUI**: Win32 API with Common Controls
-- **Build**: GCC (MinGW/MSYS2)
-- **No external dependencies** beyond standard C library, pthreads, and Win32 API
+- **GUI**: Win32 API with Common Controls (native); HTML/CSS/JS SPA (web)
+- **Build**: GCC (MinGW/MSYS2) for C; `pip install flask` for web
+- **No external runtime dependencies** beyond standard C library, pthreads, Win32 API, and Flask
+
+## Author
+
+**Ameya Borkar** — architecture, kernel, banking application, web UI, integration.
+
+Team distribution and per-concept ownership: [`CONTRIBUTIONS.md`](CONTRIBUTIONS.md).
