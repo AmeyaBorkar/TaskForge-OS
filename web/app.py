@@ -165,10 +165,14 @@ class Kernel:
         used = sum(b['size'] for b in self.mem_blocks if not b['free'])
         free = self.mem_total - used
         free_blks = [b for b in self.mem_blocks if b['free']]
+        alloc_blks = [b for b in self.mem_blocks if not b['free']]
         largest = max((b['size'] for b in free_blks), default=0)
+        frag = round((1.0 - largest / free) * 100, 2) if free > 0 else 0.0
         return {'total': self.mem_total, 'used': used, 'free': free,
-                'blocks': len(self.mem_blocks), 'free_blocks': len(free_blks),
-                'fragmentation': round(1.0 - largest / free, 4) if free > 0 else 0.0}
+                'strategy': self.mem_strategy,
+                'allocated': len(alloc_blks), 'free_blocks': len(free_blks),
+                'blocks': len(self.mem_blocks),
+                'fragmentation': frag}
 
     # -- cache -------------------------------------------------------------
     def cache_access(self, page_id):
@@ -199,11 +203,11 @@ class Kernel:
 
     def cache_stats(self):
         used = sum(1 for s in self.cache if s['page_id'] != -1)
-        total = self.cache_hits + self.cache_misses
-        return {'size': len(self.cache), 'used': used, 'hits': self.cache_hits,
-                'misses': self.cache_misses,
-                'ratio': round(self.cache_hits / total, 4) if total else 0.0,
-                'algo': self.cache_algo}
+        total_acc = self.cache_hits + self.cache_misses
+        return {'total': len(self.cache), 'used': used,
+                'hits': self.cache_hits, 'misses': self.cache_misses,
+                'hit_ratio': round((self.cache_hits / total_acc) * 100, 2) if total_acc else 0.0,
+                'algorithm': self.cache_algo}
 
     # -- filesystem --------------------------------------------------------
     def fs_create(self, name, is_dir, parent):
@@ -334,22 +338,32 @@ class Kernel:
         done = [p for p in self.processes if not p['active']]
         avg_t = (sum(p['turnaround'] for p in done) / len(done)) if done else 0
         avg_w = (sum(p['wait_time'] for p in done) / len(done)) if done else 0
+        fs_files = sum(1 for n in self.fs_nodes if not n['is_dir'] and n['active'])
+        fs_dirs = sum(1 for n in self.fs_nodes if n['is_dir'] and n['active'])
+        fs_size = sum(n['size'] for n in self.fs_nodes if n['active'])
+        detected_pids = self.deadlock_check()
+        avail_str = ', '.join(f"R{r}:{c}" for r, c in sorted(self.resources.items()))
         return {
-            'uptime': round(time.time() - self.boot_time, 1), 'clock_tick': self.clock_tick,
+            'uptime': round(time.time() - self.boot_time, 1),
+            'clock_tick': self.clock_tick,
             'processes': {'total': len(self.processes), 'active': len(active),
                           'terminated': len(done), 'avg_turnaround': round(avg_t, 2),
-                          'avg_wait': round(avg_w, 2)},
-            'scheduler': self.sched_algo, 'memory': mem, 'cache': cache,
-            'filesystem': {'nodes': len(self.fs_nodes),
-                           'files': sum(1 for n in self.fs_nodes if not n['is_dir'] and n['active']),
-                           'dirs': sum(1 for n in self.fs_nodes if n['is_dir'] and n['active'])},
-            'deadlock': {'prevention': self.prevention_on, 'denied': self.deadlock_count,
-                         'available': dict(self.resources)},
-            'disk': {'algo': self.disk_algo, 'head': self.disk_head,
-                     'queue_len': len(self.disk_queue), 'total_seek': self.total_seek,
-                     'total_ops': self.total_ops,
-                     'avg_seek': round(self.total_seek / self.total_ops, 2) if self.total_ops else 0,
-                     'buf_reads': self.buf_reads, 'buf_writes': self.buf_writes}
+                          'avg_wait': round(avg_w, 2),
+                          'scheduler': self.sched_algo},
+            'scheduler': self.sched_algo,
+            'memory': mem, 'cache': cache,
+            'filesystem': {'nodes': len(self.fs_nodes), 'files': fs_files,
+                           'directories': fs_dirs, 'total_size': f"{fs_size} B"},
+            'deadlock': {'prevention': self.prevention_on,
+                         'detected': len(detected_pids),
+                         'denied': self.deadlock_count,
+                         'resources': avail_str},
+            'io': {'algorithm': self.disk_algo, 'head_position': self.disk_head,
+                   'queue_len': len(self.disk_queue),
+                   'total_seek': self.total_seek,
+                   'operations': self.total_ops,
+                   'avg_seek': round(self.total_seek / self.total_ops, 2) if self.total_ops else 0,
+                   'reads': self.buf_reads, 'writes': self.buf_writes}
         }
 
 # ---------------------------------------------------------------------------
@@ -555,6 +569,11 @@ def api_transfer():
 @app.route('/api/account/<int:acc_id>/balance')
 def api_balance(acc_id):
     return jsonify(bank.check_balance(acc_id))
+
+@app.route('/api/account/balance', methods=['POST'])
+def api_balance_post():
+    data = request.json
+    return jsonify(bank.check_balance(int(data['account_id'])))
 
 @app.route('/api/accounts')
 def api_accounts():

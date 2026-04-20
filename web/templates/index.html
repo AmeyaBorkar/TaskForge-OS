@@ -651,7 +651,7 @@ async function refreshDashboard(btn) {
         document.getElementById('ds-mem-usage').textContent = (m.used != null ? m.used : '--') + ' / ' + (m.total != null ? m.total : '--');
         document.getElementById('ds-mem-strategy').textContent = m.strategy || '--';
         document.getElementById('ds-mem-frag').textContent = m.fragmentation != null ? m.fragmentation + '%' : '--';
-        document.getElementById('ds-mem-blocks').textContent = (m.allocated != null ? m.allocated : '--') + ' / ' + (m.free != null ? m.free : '--');
+        document.getElementById('ds-mem-blocks').textContent = (m.allocated != null ? m.allocated : '--') + ' / ' + (m.free_blocks != null ? m.free_blocks : '--');
 
         var c = data.cache || {};
         document.getElementById('ds-cache-algo').textContent = c.algorithm || '--';
